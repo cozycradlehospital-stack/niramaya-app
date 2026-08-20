@@ -128,10 +128,12 @@ function AppointmentTypesPanel({ appointmentTypes, setAppointmentTypes }) {
     const name = value.trim(); if (!name) return;
     if (appointmentTypes.some(t => t.toLowerCase() === name.toLowerCase())) { setError("This appointment type already exists."); return; }
     setAppointmentTypes(prev => [...prev, name]); setValue(""); setError("");
+    supabase.from("appointment_types").insert({ name }).then(({ error }) => { if (error) console.error("Failed to save appointment type", error); });
   }
   function removeType(type) {
     if (appointmentTypes.length <= 1) { setError("Keep at least one appointment type."); return; }
     setAppointmentTypes(prev => prev.filter(t => t !== type));
+    supabase.from("appointment_types").delete().eq("name", type).then(({ error }) => { if (error) console.error("Failed to remove appointment type", error); });
   }
   return (
     <div style={{ padding: 4 }}>
@@ -192,6 +194,26 @@ export default function App() {
     if (data) setAccounts(data);
   }
 
+  // Reference/settings data — loaded once per login. Each has a small number of
+  // rows (rooms, a handful of settings), so a full fetch on login is simplest;
+  // mutations write straight back to Supabase from wherever they happen (the
+  // panels that edit them), keeping this fetch-once-then-optimistic-write pattern
+  // consistent with how patients/appointments/clinical records work below in Shell.
+  async function loadReferenceData() {
+    const [roomsRes, clinicRes, listsRes, typesRes, printRes] = await Promise.all([
+      supabase.from("rooms").select("*"),
+      supabase.from("clinic_details").select("*").eq("id", true).single(),
+      supabase.from("quick_pick_lists").select("*"),
+      supabase.from("appointment_types").select("name"),
+      supabase.from("print_settings").select("*").eq("id", true).single(),
+    ]);
+    if (roomsRes.data) setRooms(roomsRes.data.map(roomFromDb));
+    if (clinicRes.data) setClinicDetails(clinicDetailsFromDb(clinicRes.data));
+    if (listsRes.data) setQuickPickLists(Object.fromEntries(listsRes.data.map((r) => [r.field, r.items])));
+    if (typesRes.data) setAppointmentTypes(typesRes.data.map((r) => r.name));
+    if (printRes.data) setPrintSettings(printSettingsFromDb(printRes.data));
+  }
+
   // On first load: check whether a session already exists (e.g. user refreshed
   // the page) so they aren't kicked back to the login screen every time.
   useEffect(() => {
@@ -206,7 +228,7 @@ export default function App() {
     return () => listener.subscription.unsubscribe();
   }, []);
 
-  useEffect(() => { if (session) loadAccounts(); }, [session?.id]);
+  useEffect(() => { if (session) { loadAccounts(); loadReferenceData(); } }, [session?.id]);
 
   async function handleLogout() {
     await supabase.auth.signOut();
@@ -293,10 +315,11 @@ function Shell({ session, onLogout, accounts, setAccounts, refreshAccounts, room
   // and emergency (Reception). One array, shared by all three screens via props, so a
   // booking, reschedule, cancellation, walk-in add, or check-in updates state at this
   // level and every screen re-renders live from the same data — nothing to sync manually.
-  const [appointments, setAppointments] = useState(seedScheduledAppointments);
+  const [appointments, setAppointments] = useState([]);
   const [vaccinationRecords, setVaccinationRecords] = useState({}); // { [patientId]: scheduleArray }
   const [vitalsRecords, setVitalsRecords] = useState({}); // { [patientId]: vitalsObject }
   const [patientHistoryRecords, setPatientHistoryRecords] = useState({}); // { [patientId]: [OPD/IPD entries] }
+  const [dataLoaded, setDataLoaded] = useState(false); // avoids briefly showing "no patients" before the initial fetch lands
   const navItems = navConfig[session.role];
   const RoleIcon = roleIcon[session.role];
   // Live doctor list, derived from actual staff accounts — not a hardcoded array.
@@ -305,7 +328,42 @@ function Shell({ session, onLogout, accounts, setAccounts, refreshAccounts, room
   const [allPatients, setAllPatients] = useState([]);
   const backupData = { allPatients, appointments, vaccinationRecords, vitalsRecords, patientHistoryRecords, accounts, rooms, clinicDetails, appointmentTypes, printSettings };
 
-  function addPatient(newPatient) { setAllPatients((prev) => [...prev, newPatient]); }
+  // One-time load of every clinical record on login. All of patients/appointments/
+  // vitals/consultations/vaccination schedules are fetched together here; every
+  // mutation elsewhere in Shell writes straight back to Supabase (optimistic local
+  // update + real write), so this fetch only needs to run once per session.
+  useEffect(() => {
+    let cancelled = false;
+    async function loadAll() {
+      const [patientsRes, apptsRes, vitalsRes, consultRes, vaxRes] = await Promise.all([
+        supabase.from("patients").select("*"),
+        supabase.from("appointments").select("*"),
+        supabase.from("vitals").select("*"),
+        supabase.from("consultations").select("*"),
+        supabase.from("vaccination_records").select("*"),
+      ]);
+      if (cancelled) return;
+      if (patientsRes.data) setAllPatients(patientsRes.data.map(patientFromDb));
+      if (apptsRes.data) setAppointments(apptsRes.data.map(appointmentFromDb));
+      if (vitalsRes.data) setVitalsRecords(groupByPatient(vitalsRes.data, vitalsFromDb, "dateISO"));
+      if (consultRes.data) setPatientHistoryRecords(groupByPatient(consultRes.data, consultationFromDb, null));
+      if (vaxRes.data) setVaccinationRecords(Object.fromEntries(vaxRes.data.map((r) => [r.patient_id, r.schedule])));
+      setDataLoaded(true);
+    }
+    loadAll();
+    return () => { cancelled = true; };
+  }, []);
+
+  async function addPatient(newPatient) {
+    setAllPatients((prev) => [...prev, newPatient]); // optimistic
+    const { error } = await supabase.from("patients").insert(patientToDb(newPatient));
+    if (error) console.error("Failed to save patient", error);
+  }
+  async function updatePatient(id, updates) {
+    setAllPatients((prev) => prev.map((p) => (p.id === id ? { ...p, ...updates } : p)));
+    const { error } = await supabase.from("patients").update(patientToDb({ id, ...updates })).eq("id", id);
+    if (error) console.error("Failed to update patient", error);
+  }
   function openPatient(id) {
     const found = allPatients.find((p) => p.id === id);
     setSelectedPatient(found || { id, name: "Unknown" });
@@ -323,7 +381,9 @@ function Shell({ session, onLogout, accounts, setAccounts, refreshAccounts, room
       </div>
 
       <div style={styles.content}>
-        {selectedPatient ? (
+        {!dataLoaded ? (
+          <div style={{ padding: 40, textAlign: "center", color: "#8A928F", fontSize: 13 }}>Loading clinic data…</div>
+        ) : selectedPatient ? (
           <PatientProfileScreen
             patient={buildMockPatientFor(selectedPatient)}
             onClose={() => setSelectedPatient(null)}
@@ -339,10 +399,11 @@ function Shell({ session, onLogout, accounts, setAccounts, refreshAccounts, room
             clinicDetails={clinicDetails}
             quickPickLists={quickPickLists}
             setQuickPickLists={setQuickPickLists}
+            onUpdatePatient={updatePatient}
           />
         ) : activeTab === "dashboard" ? (
           session.role === "receptionist"
-            ? <ReceptionDashboardScreen onSelectPatient={openPatient} allPatients={allPatients} appointments={appointments} setAppointments={setAppointments} vaccinationRecords={vaccinationRecords} setVitalsRecords={setVitalsRecords} rooms={rooms} />
+            ? <ReceptionDashboardScreen onSelectPatient={openPatient} allPatients={allPatients} appointments={appointments} setAppointments={setAppointments} vaccinationRecords={vaccinationRecords} setVitalsRecords={setVitalsRecords} rooms={rooms} session={session} />
             : <DoctorDashboardScreen onSelectPatient={openPatient} allPatients={allPatients} session={session} vaccinationRecords={vaccinationRecords} rooms={rooms} appointments={appointments} patientHistoryRecords={patientHistoryRecords} />
         ) : activeTab === "patients" ? (
           <PatientsTab onSelectPatient={openPatient} patients={allPatients} onAddPatient={addPatient} />
@@ -541,44 +602,60 @@ const ddStyles = {
    ========================================================================== */
 function todayAt(hour, minute) { const d = new Date(); d.setHours(hour, minute, 0, 0); return d; }
 
-function ReceptionDashboardScreen({ onSelectPatient, allPatients, appointments, setAppointments, vaccinationRecords, setVitalsRecords, rooms }) {
+function ReceptionDashboardScreen({ onSelectPatient, allPatients, appointments, setAppointments, vaccinationRecords, setVitalsRecords, rooms, session }) {
   const [checkInFor, setCheckInFor] = useState(null);
   const [entryPickerType, setEntryPickerType] = useState(null);
 
   function formatSlotTime(d) { return d.toLocaleTimeString("en-IN", { hour: "numeric", minute: "2-digit", hour12: true }); }
   function isLate(d) { return Date.now() > d.getTime(); }
   function waitingLabel(t) { const m = Math.max(0, Math.round((Date.now() - t.getTime()) / 60000)); return m < 1 ? "Just checked in" : `Waiting ${m} min`; }
-  function completeCheckIn(id, vitals) {
+  async function completeCheckIn(id, vitals) {
     const checkInAt = new Date();
     // Single array, single write — every screen reading `appointments` sees this instantly.
     setAppointments((prev) => prev.map((a) => (a.id === id ? { ...a, checkedIn: true, checkInAt, vitals } : a)));
-    if (setVitalsRecords) {
+    const appt = appointments.find((a) => a.id === id);
+    const { error: apptErr } = await supabase.from("appointments").update({ checked_in: true, check_in_at: checkInAt.toISOString(), vitals }).eq("id", id);
+    if (apptErr) console.error("Failed to save check-in", apptErr);
+    if (setVitalsRecords && appt) {
       const now = new Date();
       const recordedOnStr = now.toLocaleString("en-IN", { day: "2-digit", month: "short", year: "numeric", hour: "numeric", minute: "2-digit" });
       const dateLabel = now.toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" });
       const newEntry = { ...vitals, recordedOn: recordedOnStr, dateLabel, dateISO: now.toISOString() };
+      const patientId = appt.patientId;
+      let existingToday = null;
       setVitalsRecords((recs) => {
-        const prevHistory = recs[id] || [];
+        const prevHistory = recs[patientId] || [];
+        existingToday = prevHistory.find((row) => row.dateLabel === dateLabel);
         const existingTodayIndex = prevHistory.findIndex((row) => row.dateLabel === dateLabel);
         const nextHistory = existingTodayIndex >= 0
           ? prevHistory.map((row, i) => (i === existingTodayIndex ? newEntry : row))
           : [newEntry, ...prevHistory];
-        return { ...recs, [id]: nextHistory };
+        return { ...recs, [patientId]: nextHistory };
       });
+      if (existingToday?.dbId) {
+        const { error } = await supabase.from("vitals").update(vitalsToDb(newEntry, patientId, session?.id)).eq("id", existingToday.dbId);
+        if (error) console.error("Failed to update vitals", error);
+      } else {
+        const { error } = await supabase.from("vitals").insert(vitalsToDb(newEntry, patientId, session?.id));
+        if (error) console.error("Failed to save vitals", error);
+      }
     }
     setCheckInFor(null);
   }
   function selectEntry(patient) {
-    const already = appointments.some((a) => a.id === patient.id && a.dateISO === todayISO() && a.status !== "cancelled");
+    const already = appointments.some((a) => a.patientId === patient.id && a.dateISO === todayISO() && a.status !== "cancelled" && a.entrySource !== "appointment-desk");
     const entry = already
-      ? appointments.find((a) => a.id === patient.id && a.dateISO === todayISO() && a.status !== "cancelled")
+      ? appointments.find((a) => a.patientId === patient.id && a.dateISO === todayISO() && a.status !== "cancelled" && a.entrySource !== "appointment-desk")
       : {
-          id: patient.id, patientId: patient.id, patientName: patient.name, phone: patient.phone,
+          id: nextApptId(), patientId: patient.id, patientName: patient.name, phone: patient.phone,
           doctor: "Not yet assigned", dateISO: todayISO(), hour: null, minute: null, status: "confirmed",
           appointmentType: entryPickerType === "emergency" ? "Emergency" : "Walk-in",
           entrySource: entryPickerType, checkedIn: false, checkInAt: null,
         };
-    if (!already) setAppointments((prev) => [...prev, entry]);
+    if (!already) {
+      setAppointments((prev) => [...prev, entry]);
+      supabase.from("appointments").insert(appointmentToDb(entry)).then(({ error }) => { if (error) console.error("Failed to save walk-in", error); });
+    }
     setEntryPickerType(null);
     setCheckInFor(entry);
   }
@@ -777,6 +854,99 @@ function generateDaySlots() {
 }
 const DAY_SLOTS = generateDaySlots();
 function todayISO() { return new Date().toISOString().split("T")[0]; }
+
+/* ============================================================================
+   SUPABASE DATA MAPPING — camelCase (app) <-> snake_case (DB) for every
+   entity. Kept in one place so the shape contract between the client and
+   Postgres is explicit and easy to audit.
+   ========================================================================== */
+const patientFromDb = (r) => ({ id: r.id, name: r.name, dob: r.dob, sex: r.sex, phone: r.phone, fatherName: r.father_name, motherName: r.mother_name });
+const patientToDb = (p) => ({ id: p.id, name: p.name, dob: p.dob || null, sex: p.sex, phone: p.phone, father_name: p.fatherName || null, mother_name: p.motherName || null });
+
+const appointmentFromDb = (r) => ({
+  id: r.id, patientId: r.patient_id, patientName: r.patient_name, phone: r.phone,
+  doctor: r.doctor_name, dateISO: r.date_iso, hour: r.hour, minute: r.minute,
+  status: r.status, appointmentType: r.appointment_type, entrySource: r.entry_source,
+  cancelReason: r.cancel_reason, checkedIn: r.checked_in,
+  checkInAt: r.check_in_at ? new Date(r.check_in_at) : null, vitals: r.vitals || null,
+});
+const appointmentToDb = (a) => ({
+  id: a.id, patient_id: a.patientId, patient_name: a.patientName || null, phone: a.phone || null,
+  doctor_name: a.doctor || null, date_iso: a.dateISO, hour: a.hour ?? null, minute: a.minute ?? null,
+  status: a.status || "confirmed", appointment_type: a.appointmentType || "New Consultation",
+  entry_source: a.entrySource || "appointment-desk", cancel_reason: a.cancelReason || null,
+  checked_in: !!a.checkedIn, check_in_at: a.checkInAt ? new Date(a.checkInAt).toISOString() : null,
+  vitals: a.vitals || null,
+});
+
+const vitalsFromDb = (r) => ({
+  dbId: r.id, weight: r.weight, height: r.height, headCirc: r.head_circ, pr: r.pr, rr: r.rr, temp: r.temp, spo2: r.spo2,
+  dateLabel: r.date_label, dateISO: r.recorded_at,
+  recordedOn: new Date(r.recorded_at).toLocaleString("en-IN", { day: "2-digit", month: "short", year: "numeric", hour: "numeric", minute: "2-digit" }),
+});
+const vitalsToDb = (v, patientId, recordedBy) => ({
+  patient_id: patientId, recorded_by: recordedBy || null, date_label: v.dateLabel,
+  weight: v.weight || null, height: v.height || null, head_circ: v.headCirc || null,
+  pr: v.pr || null, rr: v.rr || null, temp: v.temp || null, spo2: v.spo2 || null,
+});
+
+// Consultations cover both OPD (has a `prescription` sub-object) and IPD (admit/discharge) —
+// two shapes, one table, distinguished by `type`.
+function consultationFromDb(r) {
+  if (r.type === "IPD") {
+    return { dbId: r.id, type: "IPD", admitDate: r.admit_date, dischargeDate: r.discharge_date, doctor: r.consulting_doctor, room: r.room_number, fileNumber: r.file_number, summary: r.findings };
+  }
+  const base = { dbId: r.id, type: "OPD", date: r.date_label, doctor: r.consulting_doctor, diagnosis: r.diagnosis, hasPrescription: r.has_prescription, bookedDoctor: r.booked_doctor, consultingDoctor: r.consulting_doctor };
+  if (!r.has_prescription) return base;
+  return { ...base, prescription: { date: r.date_label, bookedDoctor: r.booked_doctor, consultingDoctor: r.consulting_doctor, complaints: r.complaints, findings: r.findings, diagnosis: r.diagnosis, medications: r.medications || [], investigations: r.investigations, instructions: r.instructions, followUp: r.follow_up } };
+}
+function consultationToDb(h, patientId) {
+  if (h.type === "IPD") {
+    return { patient_id: patientId, type: "IPD", date_label: h.admitDate || todayISO(), admit_date: h.admitDate || null, discharge_date: h.dischargeDate || null, consulting_doctor: h.doctor || "—", room_number: h.room || null, file_number: h.fileNumber || null, findings: h.summary || null, has_prescription: false };
+  }
+  const rx = h.prescription || {};
+  return {
+    patient_id: patientId, type: "OPD", date_label: h.date, booked_doctor: h.bookedDoctor || null, consulting_doctor: h.consultingDoctor || h.doctor,
+    diagnosis: h.diagnosis || null, has_prescription: !!h.hasPrescription,
+    complaints: rx.complaints || null, findings: rx.findings || null, medications: rx.medications || null,
+    investigations: rx.investigations || null, instructions: rx.instructions || null, follow_up: rx.followUp || null,
+  };
+}
+
+const roomFromDb = (r) => ({ number: r.number, type: r.type, status: r.status, patient: r.patient_name, patientId: r.patient_id, doctor: r.doctor, fileNumber: r.file_number, admitDate: r.admit_date });
+const roomToDb = (r) => ({ number: r.number, type: r.type, status: r.status, patient_name: r.patient || null, patient_id: r.patientId || null, doctor: r.doctor || null, file_number: r.fileNumber || null, admit_date: r.admitDate || null });
+
+const clinicDetailsFromDb = (r) => ({ name: r.name, address: r.address, phone: r.phone, email: r.email || "", website: r.website || "" });
+const clinicDetailsToDb = (c) => ({ name: c.name, address: c.address, phone: c.phone, email: c.email || "", website: c.website || "" });
+
+const printSettingsFromDb = (r) => ({
+  marginTop: r.margin_top, marginBottom: r.margin_bottom, marginLeft: r.margin_left, marginRight: r.margin_right,
+  includeClinicHeader: r.include_clinic_header, includeComplaints: r.include_complaints, includeFindings: r.include_findings,
+  includeDiagnosis: r.include_diagnosis, includeMedications: r.include_medications, includeInvestigations: r.include_investigations,
+  includeInstructions: r.include_instructions, includeVaccination: r.include_vaccination, includeFollowUp: r.include_follow_up, includeGrowthChart: r.include_growth_chart,
+});
+const printSettingsToDb = (p) => ({
+  margin_top: p.marginTop, margin_bottom: p.marginBottom, margin_left: p.marginLeft, margin_right: p.marginRight,
+  include_clinic_header: p.includeClinicHeader, include_complaints: p.includeComplaints, include_findings: p.includeFindings,
+  include_diagnosis: p.includeDiagnosis, include_medications: p.includeMedications, include_investigations: p.includeInvestigations,
+  include_instructions: p.includeInstructions, include_vaccination: p.includeVaccination, include_follow_up: p.includeFollowUp, include_growth_chart: p.includeGrowthChart,
+});
+
+// Groups a flat list of rows into { [patientId]: [...] }, newest first — the
+// shape vitalsRecords/patientHistoryRecords have always used locally.
+function groupByPatient(rows, mapFn, sortKey) {
+  const grouped = {};
+  for (const row of rows) {
+    const mapped = mapFn(row);
+    const pid = row.patient_id;
+    if (!grouped[pid]) grouped[pid] = [];
+    grouped[pid].push(mapped);
+  }
+  if (sortKey) for (const pid in grouped) grouped[pid].sort((a, b) => new Date(b[sortKey]) - new Date(a[sortKey]));
+  return grouped;
+}
+
+
 function formatDateLabel(dateISO) { return new Date(dateISO + "T00:00:00").toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" }); }
 
 let apptUid = 1000;
@@ -800,19 +970,23 @@ function AppointmentBookingScreen({ allPatients, appointments, setAppointments, 
   }
 
   function handleBook({ patient, doctor, hour, minute, dateISO, appointmentType }) {
-    setAppointments((prev) => [...prev, { id: nextApptId(), patientId: patient.id, patientName: patient.name, phone: patient.phone, doctor, dateISO, hour, minute, status: "confirmed", appointmentType, entrySource: "appointment-desk", checkedIn: false, checkInAt: null }]);
+    const entry = { id: nextApptId(), patientId: patient.id, patientName: patient.name, phone: patient.phone, doctor, dateISO, hour, minute, status: "confirmed", appointmentType, entrySource: "appointment-desk", checkedIn: false, checkInAt: null };
+    setAppointments((prev) => [...prev, entry]);
     setSelectedDate(dateISO);
     setShowBookModal(false);
     setPrefillSlot(null);
+    supabase.from("appointments").insert(appointmentToDb(entry)).then(({ error }) => { if (error) console.error("Failed to save appointment", error); });
   }
   function handleReschedule(apptId, dateISO, hour, minute) {
     setAppointments((prev) => prev.map((a) => (a.id === apptId ? { ...a, dateISO, hour, minute, status: "confirmed" } : a)));
     setSelectedDate(dateISO);
     setRescheduling(null);
+    supabase.from("appointments").update({ date_iso: dateISO, hour, minute, status: "confirmed" }).eq("id", apptId).then(({ error }) => { if (error) console.error("Failed to reschedule appointment", error); });
   }
   function handleCancel(apptId, reason) {
     setAppointments((prev) => prev.map((a) => (a.id === apptId ? { ...a, status: "cancelled", cancelReason: reason } : a)));
     setCancelling(null);
+    supabase.from("appointments").update({ status: "cancelled", cancel_reason: reason }).eq("id", apptId).then(({ error }) => { if (error) console.error("Failed to cancel appointment", error); });
   }
 
   return (
@@ -1419,6 +1593,7 @@ function IPDRoomDashboardScreen({ allPatients, rooms, setRooms, isAdmin, setPati
     const admitDate = new Date().toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" });
     setRooms((prev) => prev.map((r) => (r.number === roomNumber ? { ...r, status: "occupied", patient: patient.name, patientId: patient.id, doctor, fileNumber, admitDate } : r)));
     setAdmittingTo(null);
+    supabase.from("rooms").update({ status: "occupied", patient_name: patient.name, patient_id: patient.id, doctor, file_number: fileNumber || null, admit_date: admitDate }).eq("number", roomNumber).then(({ error }) => { if (error) console.error("Failed to save admission", error); });
   }
   function dischargeRoom(roomNumber, summary) {
     const room = rooms.find((r) => r.number === roomNumber);
@@ -1434,9 +1609,11 @@ function IPDRoomDashboardScreen({ allPatients, rooms, setRooms, isAdmin, setPati
         summary,
       };
       setPatientHistoryRecords((recs) => ({ ...recs, [room.patientId]: [entry, ...(recs[room.patientId] || [])] }));
+      supabase.from("consultations").insert(consultationToDb(entry, room.patientId)).then(({ error }) => { if (error) console.error("Failed to save discharge summary", error); });
     }
     setRooms((prev) => prev.map((r) => (r.number === roomNumber ? { number: r.number, type: r.type, status: "empty" } : r)));
     setManagingRoom(null); setSwitchTarget(false);
+    supabase.from("rooms").update({ status: "empty", patient_name: null, patient_id: null, doctor: null, file_number: null, admit_date: null }).eq("number", roomNumber).then(({ error }) => { if (error) console.error("Failed to save discharge", error); });
   }
   function switchToRoom(fromRoomNumber, toRoomNumber) {
     const fromRoom = rooms.find((r) => r.number === fromRoomNumber);
@@ -1446,6 +1623,10 @@ function IPDRoomDashboardScreen({ allPatients, rooms, setRooms, isAdmin, setPati
       return r;
     }));
     setManagingRoom(null); setSwitchTarget(false);
+    Promise.all([
+      supabase.from("rooms").update({ status: "occupied", patient_name: fromRoom.patient, patient_id: fromRoom.patientId, doctor: fromRoom.doctor, file_number: fromRoom.fileNumber || null, admit_date: fromRoom.admitDate || null }).eq("number", toRoomNumber),
+      supabase.from("rooms").update({ status: "empty", patient_name: null, patient_id: null, doctor: null, file_number: null, admit_date: null }).eq("number", fromRoomNumber),
+    ]).then(([a, b]) => { if (a.error || b.error) console.error("Failed to save room switch", a.error || b.error); });
   }
 
   return (
@@ -1642,7 +1823,7 @@ const statusColors = {
   "not-due": { bg: "#F1F1EF", border: "#DEDDD6", text: "#8A928F", label: "Not yet due" },
 };
 
-function PatientProfileScreen({ patient, onClose, session, printSettings, vaccinationRecords, setVaccinationRecords, vitalsRecords, setVitalsRecords, patientHistoryRecords, setPatientHistoryRecords, doctorNames, clinicDetails, quickPickLists, setQuickPickLists }) {
+function PatientProfileScreen({ patient, onClose, session, printSettings, vaccinationRecords, setVaccinationRecords, vitalsRecords, setVitalsRecords, patientHistoryRecords, setPatientHistoryRecords, doctorNames, clinicDetails, quickPickLists, setQuickPickLists, onUpdatePatient }) {
   const [tab, setTab] = useState("profile");
   const role = session.role === "receptionist" ? "receptionist" : "doctor";
   const isDoctor = session.role === "doctor";
@@ -1680,17 +1861,26 @@ function PatientProfileScreen({ patient, onClose, session, printSettings, vaccin
     setVaxScheduleLocal((prev) => {
       const next = typeof updater === "function" ? updater(prev) : updater;
       if (setVaccinationRecords) setVaccinationRecords((recs) => ({ ...recs, [patient.id]: next }));
+      // The whole schedule is one JSONB blob per patient, so every edit (a due date
+      // set, a dose marked given, an "Others" vaccine added) just upserts the full
+      // array back — no per-vaccine diffing needed.
+      supabase.from("vaccination_records").upsert({ patient_id: patient.id, schedule: next }).then(({ error }) => { if (error) console.error("Failed to save vaccination schedule", error); });
       return next;
     });
   }
 
-  function saveProfile() { setProfileData(profileDraft); setEditingProfile(false); }
+  function saveProfile() {
+    setProfileData(profileDraft);
+    setEditingProfile(false);
+    if (onUpdatePatient) onUpdatePatient(patient.id, profileDraft);
+  }
   function startEditVitals() { setVitalsDraft(currentVitals); setEditingVitals(true); }
-  function saveVitals() {
+  async function saveVitals() {
     const now = new Date();
     const recordedOnStr = now.toLocaleString("en-IN", { day: "2-digit", month: "short", year: "numeric", hour: "numeric", minute: "2-digit" });
     const dateLabel = now.toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" });
     const newEntry = { ...vitalsDraft, recordedOn: recordedOnStr, dateLabel, dateISO: now.toISOString() };
+    const existingToday = vitalsHistory.find((row) => row.dateLabel === dateLabel);
     setVitalsHistory((prev) => {
       const existingTodayIndex = prev.findIndex((row) => row.dateLabel === dateLabel);
       if (existingTodayIndex >= 0) {
@@ -1701,6 +1891,15 @@ function PatientProfileScreen({ patient, onClose, session, printSettings, vaccin
       return [newEntry, ...prev];
     });
     setEditingVitals(false);
+    // Upsert-by-day: same "one entry per calendar day" rule the UI already enforces,
+    // mirrored server-side so a doctor and reception editing the same day don't create duplicates.
+    if (existingToday?.dbId) {
+      const { error } = await supabase.from("vitals").update(vitalsToDb(newEntry, patient.id, session.id)).eq("id", existingToday.dbId);
+      if (error) console.error("Failed to update vitals", error);
+    } else {
+      const { error } = await supabase.from("vitals").insert(vitalsToDb(newEntry, patient.id, session.id));
+      if (error) console.error("Failed to save vitals", error);
+    }
   }
 
   const tabs = [
@@ -1712,24 +1911,20 @@ function PatientProfileScreen({ patient, onClose, session, printSettings, vaccin
   ];
 
   function saveNewConsultation(record) {
-    setHistory((prev) => [
-      { type: "OPD", date: record.date, doctor: record.consultingDoctor, diagnosis: record.diagnosis || "Consultation", hasPrescription: true, bookedDoctor: record.bookedDoctor, consultingDoctor: record.consultingDoctor, prescription: record },
-      ...prev,
-    ]);
+    const entry = { type: "OPD", date: record.date, doctor: record.consultingDoctor, diagnosis: record.diagnosis || "Consultation", hasPrescription: true, bookedDoctor: record.bookedDoctor, consultingDoctor: record.consultingDoctor, prescription: record };
+    setHistory((prev) => [entry, ...prev]);
     setCreatingRx(false);
     setFollowUpSource(null);
+    supabase.from("consultations").insert(consultationToDb(entry, patient.id)).then(({ error }) => { if (error) console.error("Failed to save consultation", error); });
   }
   // Printing a handwritten sheet is also a completed consultation — it should move the
   // patient from "Live queue" to "Checked out" on the Doctor Dashboard, same as a typed one.
   function recordHandwrittenCheckout() {
     const todayLabel = new Date().toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" });
-    setHistory((prev) => {
-      if (prev.some((h) => h.date === todayLabel)) return prev; // already checked out today, don't duplicate
-      return [
-        { type: "OPD", date: todayLabel, doctor: session.name, diagnosis: "Handwritten prescription", hasPrescription: false, bookedDoctor: session.name, consultingDoctor: session.name },
-        ...prev,
-      ];
-    });
+    if (history.some((h) => h.date === todayLabel)) return; // already checked out today, don't duplicate
+    const entry = { type: "OPD", date: todayLabel, doctor: session.name, diagnosis: "Handwritten prescription", hasPrescription: false, bookedDoctor: session.name, consultingDoctor: session.name };
+    setHistory((prev) => [entry, ...prev]);
+    supabase.from("consultations").insert(consultationToDb(entry, patient.id)).then(({ error }) => { if (error) console.error("Failed to save consultation", error); });
   }
 
   if (viewingRx) return <PrescriptionViewer entry={viewingRx} patient={profileData} onBack={() => setViewingRx(null)} printSettings={printSettings} vaxList={flattenSchedule(vaxSchedule)} vitalsHistory={vitalsHistory} clinicDetails={clinicDetails} />;
@@ -1989,7 +2184,18 @@ function NewConsultationForm({ patient, session, onCancel, onSave, copyFrom, doc
 
   function addToMasterList(field, value) {
     if (setQuickPickLists) {
-      setQuickPickLists((prev) => (prev[field].some((o) => o.toLowerCase() === value.toLowerCase()) ? prev : { ...prev, [field]: [...prev[field], value] }));
+      let wasNew = false;
+      setQuickPickLists((prev) => {
+        if (prev[field].some((o) => o.toLowerCase() === value.toLowerCase())) return prev;
+        wasNew = true;
+        return { ...prev, [field]: [...prev[field], value] };
+      });
+      if (wasNew) {
+        supabase.from("quick_pick_lists").select("items").eq("field", field).single().then(({ data }) => {
+          const items = data?.items?.some((o) => o.toLowerCase() === value.toLowerCase()) ? data.items : [...(data?.items || []), value];
+          supabase.from("quick_pick_lists").update({ items }).eq("field", field).then(({ error }) => { if (error) console.error("Failed to save quick-pick item", error); });
+        });
+      }
     }
   }
 
@@ -2980,7 +3186,7 @@ function ClinicSettings({ accounts, setAccounts, refreshAccounts, session, print
                 <label style={settingsStyles.label}>Phone<input style={settingsStyles.input} value={draft.phone} onChange={(e) => setDraft({ ...draft, phone: e.target.value })} /></label>
                 <label style={settingsStyles.label}>Email<input style={settingsStyles.input} type="email" value={draft.email} onChange={(e) => setDraft({ ...draft, email: e.target.value })} /></label>
                 <label style={settingsStyles.label}>Website<input style={settingsStyles.input} value={draft.website} onChange={(e) => setDraft({ ...draft, website: e.target.value })} /></label>
-                <div style={settingsStyles.formActions}><button style={settingsStyles.saveBtn} onClick={() => { setClinicDetails(draft); setEditing(false); setSaved(true); }}>Save changes</button><button style={settingsStyles.cancelBtn} onClick={() => setEditing(false)}>Cancel</button></div>
+                <div style={settingsStyles.formActions}><button style={settingsStyles.saveBtn} onClick={() => { setClinicDetails(draft); setEditing(false); setSaved(true); supabase.from("clinic_details").update(clinicDetailsToDb(draft)).eq("id", true).then(({ error }) => { if (error) console.error("Failed to save clinic details", error); }); }}>Save changes</button><button style={settingsStyles.cancelBtn} onClick={() => setEditing(false)}>Cancel</button></div>
               </div>
             )}
           </div>
@@ -3190,12 +3396,14 @@ function RoomSetupPanel({ rooms, setRooms }) {
     setRooms((prev) => [...prev, { number: num, type, status: "empty" }]);
     setNumber("");
     setError("");
+    supabase.from("rooms").insert({ number: num, type, status: "empty" }).then(({ error }) => { if (error) console.error("Failed to save room", error); });
   }
   function handleRemove(num) {
     const room = rooms.find((r) => r.number === num);
     if (room?.status === "occupied") { setError("Discharge the patient before removing this room."); return; }
     setRooms((prev) => prev.filter((r) => r.number !== num));
     setError("");
+    supabase.from("rooms").delete().eq("number", num).then(({ error }) => { if (error) console.error("Failed to remove room", error); });
   }
 
   const grouped = roomTypes.map((t) => ({ type: t, list: rooms.filter((r) => r.type === t) }));
@@ -3250,7 +3458,10 @@ function PrintSettingsPanel({ printSettings, setPrintSettings }) {
     ["includeVaccination", "Vaccination status"], ["includeFollowUp", "Follow-up"], ["includeGrowthChart", "Growth chart placeholder"],
   ];
   function toggle(key) { setDraft((d) => ({ ...d, [key]: !d[key] })); }
-  function save() { setPrintSettings(draft); setSaved(true); }
+  function save() {
+    setPrintSettings(draft); setSaved(true);
+    supabase.from("print_settings").update(printSettingsToDb(draft)).eq("id", true).then(({ error }) => { if (error) console.error("Failed to save print settings", error); });
+  }
 
   return (
     <div style={{ padding: 4 }}>
