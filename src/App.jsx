@@ -360,7 +360,19 @@ function Shell({ session, onLogout, accounts, setAccounts, refreshAccounts, room
       if (cancelled) return;
       if (patientsRes.data) setAllPatients(patientsRes.data.map(patientFromDb));
       if (apptsRes.data) setAppointments(apptsRes.data.map(appointmentFromDb));
-      if (vitalsRes.data) setVitalsRecords(groupByPatient(vitalsRes.data, vitalsFromDb, "dateISO"));
+      if (vitalsRes.data) {
+        const groupedVitals = groupByPatient(vitalsRes.data, vitalsFromDb, "dateISO");
+        Object.keys(groupedVitals).forEach((pid) => {
+          const byDate = new Map();
+          groupedVitals[pid].forEach((v) => {
+            const key = v.dateLabel || indiaDateLabel(new Date(v.dateISO));
+            const current = byDate.get(key);
+            if (!current || new Date(v.dateISO) >= new Date(current.dateISO)) byDate.set(key, v);
+          });
+          groupedVitals[pid] = [...byDate.values()].sort((a,b) => new Date(b.dateISO) - new Date(a.dateISO));
+        });
+        setVitalsRecords(groupedVitals);
+      }
       if (consultRes.data) setPatientHistoryRecords(groupByPatient(consultRes.data, consultationFromDb, null));
       if (vaxRes.data) setVaccinationRecords(Object.fromEntries(vaxRes.data.map((r) => [r.patient_id, r.schedule])));
       setDataLoaded(true);
@@ -699,8 +711,8 @@ function ReceptionDashboardScreen({ onSelectPatient, allPatients, appointments, 
       let existingToday = null;
       setVitalsRecords((recs) => {
         const prevHistory = recs[patientId] || [];
-        existingToday = prevHistory.find((row) => row.dateLabel === dateLabel);
-        const existingTodayIndex = prevHistory.findIndex((row) => row.dateLabel === dateLabel);
+        existingToday = prevHistory.find((row) => row.dateISO === newEntry.dateISO || row.dateLabel === dateLabel || indiaDateLabel(new Date(row.dateISO)) === dateLabel);
+        const existingTodayIndex = prevHistory.findIndex((row) => row.dateISO === newEntry.dateISO || row.dateLabel === dateLabel || indiaDateLabel(new Date(row.dateISO)) === dateLabel);
         const nextHistory = existingTodayIndex >= 0
           ? prevHistory.map((row, i) => (i === existingTodayIndex ? newEntry : row))
           : [newEntry, ...prevHistory];
@@ -810,7 +822,8 @@ function ReceptionDashboardScreen({ onSelectPatient, allPatients, appointments, 
             <div style={rdStyles.rowList}>
               {sorted.length === 0 && <div style={rdStyles.emptyNote}>No appointments for this date.</div>}
               {sorted.map((a) => {
-                const seenToday = isToday && (patientHistoryRecords?.[a.patientId] || []).some((h) => h.date === todayLabel);
+                const selectedDateLabel = formatDateLabel(selectedDate);
+                const seenToday = (patientHistoryRecords?.[a.patientId] || []).some((h) => h.date === selectedDateLabel);
                 return (
                 <div key={a.id} style={{ ...rdStyles.patientRow, ...(a.isEmergency && !a.checkedIn ? rdStyles.patientRowEmergency : {}) }}>
                   <div style={rdStyles.avatarSmall} onClick={() => onSelectPatient(a.patientId, a.name)}>{a.name.charAt(0)}</div>
@@ -859,7 +872,7 @@ function ReceptionDashboardScreen({ onSelectPatient, allPatients, appointments, 
         <RoomsAndVaccinesSection vaccinationRecords={vaccinationRecords} allPatients={allPatients} rooms={rooms} />
       </div>
       {entryPickerType && <WalkInPicker title={entryPickerType === "emergency" ? "Add emergency patient" : "Add walk-in"} patients={allPatients} onCancel={() => setEntryPickerType(null)} onSelect={selectEntry} />}
-      {checkInFor && <VitalsModal patient={checkInFor} onCancel={() => setCheckInFor(null)} onSubmit={(vitals) => completeCheckIn(checkInFor.id, vitals)} />}
+      {checkInFor && <VitalsModal patient={checkInFor} onCancel={() => setCheckInFor(null)} onSubmit={(vitals, doctor) => { if (doctor) assignDoctor(checkInFor.id, doctor); completeCheckIn(checkInFor.id, vitals); }} doctorNames={doctorNames} />}
     </div>
   );
 }
@@ -894,8 +907,9 @@ function WalkInPicker({ title, patients, onCancel, onSelect }) {
   );
 }
 
-function VitalsModal({ patient, onCancel, onSubmit }) {
+function VitalsModal({ patient, onCancel, onSubmit, doctorNames = [] }) {
   const [vitals, setVitals] = useState({ weight: "", height: "", headCirc: "", pr: "", rr: "", temp: "", spo2: "" });
+  const [assignedDoctor, setAssignedDoctor] = useState(patient.doctor && patient.doctor !== "Not yet assigned" ? patient.doctor : "");
   const fields = [
     { key: "weight", icon: <Weight size={14} />, label: "Weight", unit: "kg" },
     { key: "height", icon: <Ruler size={14} />, label: "Height", unit: "cm" },
@@ -906,7 +920,7 @@ function VitalsModal({ patient, onCancel, onSubmit }) {
     { key: "spo2", icon: <Droplet size={14} />, label: "SpO2", unit: "%" },
   ];
   function update(k, v) { setVitals((s) => ({ ...s, [k]: v })); }
-  function handleSubmit() { const shaped = {}; fields.forEach((f) => { shaped[f.key] = { value: vitals[f.key], unit: f.unit }; }); onSubmit(shaped); }
+  function handleSubmit() { const shaped = {}; fields.forEach((f) => { shaped[f.key] = { value: vitals[f.key], unit: f.unit }; }); onSubmit(shaped, assignedDoctor); }
   return (
     <div style={rdStyles.modalOverlay} onClick={onCancel}>
       <div style={rdStyles.modalCard} onClick={(e) => e.stopPropagation()}>
@@ -914,6 +928,7 @@ function VitalsModal({ patient, onCancel, onSubmit }) {
           <div><div style={rdStyles.modalPatientName}>{patient.name}</div><div style={rdStyles.modalPatientMeta}>{patient.id} · Check-in vitals</div></div>
           <button style={rdStyles.modalCloseBtn} onClick={onCancel}><X size={15} /></button>
         </div>
+        {doctorNames.length > 0 && <label style={{ ...rdStyles.vitalLabel, marginBottom: 14 }}><span style={rdStyles.vitalLabelText}>Assigned doctor</span><select style={rdStyles.vitalInput} value={assignedDoctor} onChange={(e) => setAssignedDoctor(e.target.value)}><option value="">Assign doctor…</option>{doctorNames.map((d) => <option key={d} value={d}>{d}</option>)}</select></label>}
         <div style={rdStyles.vitalsGrid}>
           {fields.map((f) => (
             <label key={f.key} style={rdStyles.vitalLabel}>
@@ -2082,7 +2097,10 @@ function PatientProfileScreen({ patient, onClose, session, printSettings, vaccin
       ]);
       if (cancelled) return;
       if (vitalsRes.data) {
-        const mapped = vitalsRes.data.map(vitalsFromDb).sort((a, b) => new Date(b.dateISO) - new Date(a.dateISO));
+        const rawMapped = vitalsRes.data.map(vitalsFromDb).sort((a, b) => new Date(b.dateISO) - new Date(a.dateISO));
+        const byDate = new Map();
+        rawMapped.forEach((v) => { const key = v.dateLabel || indiaDateLabel(new Date(v.dateISO)); if (!byDate.has(key)) byDate.set(key, v); });
+        const mapped = [...byDate.values()];
         setVitalsHistoryLocal(mapped);
         if (setVitalsRecords) setVitalsRecords((recs) => ({ ...recs, [patient.id]: mapped }));
       }
@@ -2111,9 +2129,9 @@ function PatientProfileScreen({ patient, onClose, session, printSettings, vaccin
     const recordedOnStr = now.toLocaleString("en-IN", { day: "2-digit", month: "short", year: "numeric", hour: "numeric", minute: "2-digit" });
     const dateLabel = now.toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" });
     const newEntry = { ...vitalsDraft, recordedOn: recordedOnStr, dateLabel, dateISO: indiaDateISO(now) };
-    const existingToday = vitalsHistory.find((row) => row.dateLabel === dateLabel);
+    const existingToday = vitalsHistory.find((row) => row.dateISO === newEntry.dateISO || row.dateLabel === dateLabel || indiaDateLabel(new Date(row.dateISO)) === dateLabel);
     setVitalsHistory((prev) => {
-      const existingTodayIndex = prev.findIndex((row) => row.dateLabel === dateLabel);
+      const existingTodayIndex = prev.findIndex((row) => row.dateISO === newEntry.dateISO || row.dateLabel === dateLabel || indiaDateLabel(new Date(row.dateISO)) === dateLabel);
       if (existingTodayIndex >= 0) {
         const next = [...prev];
         next[existingTodayIndex] = newEntry;
