@@ -371,7 +371,7 @@ function Shell({ session, onLogout, accounts, setAccounts, refreshAccounts, room
 
   return (
     <div style={styles.shellPage}>
-      <div style={styles.topBar}>
+      <div style={styles.topBar} className="no-print">
         <div style={styles.topBarBrand}><Stethoscope size={17} color="#0B3B36" /><span style={styles.topBarBrandText}>NIRAMAYA</span></div>
         <div style={styles.topBarUser}>
           <div style={styles.userBadge}><RoleIcon size={13} /><span>{roleLabel[session.role]}</span></div>
@@ -403,8 +403,8 @@ function Shell({ session, onLogout, accounts, setAccounts, refreshAccounts, room
           />
         ) : activeTab === "dashboard" ? (
           session.role === "receptionist"
-            ? <ReceptionDashboardScreen onSelectPatient={openPatient} allPatients={allPatients} appointments={appointments} setAppointments={setAppointments} vaccinationRecords={vaccinationRecords} setVitalsRecords={setVitalsRecords} rooms={rooms} session={session} />
-            : <DoctorDashboardScreen onSelectPatient={openPatient} allPatients={allPatients} session={session} vaccinationRecords={vaccinationRecords} rooms={rooms} appointments={appointments} patientHistoryRecords={patientHistoryRecords} />
+            ? <ReceptionDashboardScreen onSelectPatient={openPatient} allPatients={allPatients} appointments={appointments} setAppointments={setAppointments} vaccinationRecords={vaccinationRecords} setVitalsRecords={setVitalsRecords} rooms={rooms} session={session} patientHistoryRecords={patientHistoryRecords} />
+            : <DoctorDashboardScreen onSelectPatient={openPatient} allPatients={allPatients} session={session} vaccinationRecords={vaccinationRecords} rooms={rooms} appointments={appointments} setAppointments={setAppointments} patientHistoryRecords={patientHistoryRecords} />
         ) : activeTab === "patients" ? (
           <PatientsTab onSelectPatient={openPatient} patients={allPatients} onAddPatient={addPatient} />
         ) : activeTab === "appointments" ? (
@@ -419,7 +419,7 @@ function Shell({ session, onLogout, accounts, setAccounts, refreshAccounts, room
       </div>
 
       {!selectedPatient && (
-        <div style={styles.bottomNav}>
+        <div style={styles.bottomNav} className="no-print">
           {navItems.map((item) => {
             const Icon = item.icon, active = activeTab === item.key;
             return (
@@ -449,7 +449,7 @@ function ComingSoon({ tabKey, navItems }) {
 
 const searchTabs = [{ key: "name", label: "Name" }, { key: "phone", label: "Phone" }, { key: "id", label: "ID" }, { key: "dob", label: "DOB" }];
 
-function DoctorDashboardScreen({ onSelectPatient, allPatients, session, vaccinationRecords, rooms, appointments, patientHistoryRecords }) {
+function DoctorDashboardScreen({ onSelectPatient, allPatients, session, vaccinationRecords, rooms, appointments, setAppointments, patientHistoryRecords }) {
   const [searchTab, setSearchTab] = useState("name");
   const [query, setQuery] = useState("");
   const [rowTab, setRowTab] = useState("live");
@@ -473,13 +473,13 @@ function DoctorDashboardScreen({ onSelectPatient, allPatients, session, vaccinat
   // Checked out = checked in, AND a prescription/consultation was recorded for them today —
   // this is real interconnection with Reception's check-in and the doctor's own consultations.
   const liveQueueReal = checkedInToday
-    .filter((a) => !(patientHistoryRecords?.[a.id] || []).some((h) => h.date === todayLabel))
-    .map((a) => ({ ...a, name: a.name || a.patientName, dob: patientDob(a.id) }));
+    .filter((a) => !(patientHistoryRecords?.[a.patientId] || []).some((h) => h.date === todayLabel))
+    .map((a) => ({ ...a, name: a.name || a.patientName, dob: patientDob(a.patientId) }));
   const checkedOutReal = checkedInToday
-    .filter((a) => (patientHistoryRecords?.[a.id] || []).some((h) => h.date === todayLabel))
+    .filter((a) => (patientHistoryRecords?.[a.patientId] || []).some((h) => h.date === todayLabel))
     .map((a) => {
-      const todaysEntry = (patientHistoryRecords?.[a.id] || []).find((h) => h.date === todayLabel);
-      return { ...a, name: a.name || a.patientName, dob: patientDob(a.id), todaysEntry };
+      const todaysEntry = (patientHistoryRecords?.[a.patientId] || []).find((h) => h.date === todayLabel);
+      return { ...a, name: a.name || a.patientName, dob: patientDob(a.patientId), todaysEntry };
     });
 
   const filteredLiveQueue = useMemo(() => liveQueueReal.filter(matches), [query, searchTab, appointments, patientHistoryRecords]);
@@ -493,6 +493,14 @@ function DoctorDashboardScreen({ onSelectPatient, allPatients, session, vaccinat
 
   function waitingLabel(t) { const m = Math.max(0, Math.round((Date.now() - t.getTime()) / 60000)); return m < 1 ? "Just checked in" : `Waiting ${m} min`; }
   function waitingSeverity(t) { const m = Math.round((Date.now() - t.getTime()) / 60000); return m >= 30 ? "high" : m >= 15 ? "medium" : "low"; }
+  // Undo an accidental or no-longer-relevant check-in (patient left, wrong tap, etc.) —
+  // reverts the appointment back to "not checked in" so it drops off the live queue.
+  // Vitals already recorded stay in their history; this only reverses the queue status.
+  function removeFromQueue(apptId) {
+    if (!setAppointments) return;
+    setAppointments((prev) => prev.map((a) => (a.id === apptId ? { ...a, checkedIn: false, checkInAt: null } : a)));
+    supabase.from("appointments").update({ checked_in: false, check_in_at: null }).eq("id", apptId).then(({ error }) => { if (error) console.error("Failed to remove from queue", error); });
+  }
 
   return (
     <div style={ddStyles.page}>
@@ -522,14 +530,15 @@ function DoctorDashboardScreen({ onSelectPatient, allPatients, session, vaccinat
             {sortedQueue.map((p) => {
               const sev = waitingSeverity(p.checkInAt);
               return (
-                <div key={p.id} style={ddStyles.patientRow} onClick={() => onSelectPatient(p.id, p.name)} role="button" tabIndex={0}>
-                  <div style={ddStyles.avatarSmall}>{p.name.charAt(0)}</div>
-                  <div style={ddStyles.patientMain}>
-                    <div style={ddStyles.patientName}>{p.name} <span style={ddStyles.patientId}>{p.id}</span>{p.entrySource === "emergency" && <span style={ddStyles.emergencyTag}>EMERGENCY</span>}{p.entrySource === "walk-in" && <span style={ddStyles.walkinTag}>WALK-IN</span>}</div>
+                <div key={p.id} style={ddStyles.patientRow}>
+                  <div style={ddStyles.avatarSmall} onClick={() => onSelectPatient(p.patientId, p.name)}>{p.name.charAt(0)}</div>
+                  <div style={ddStyles.patientMain} onClick={() => onSelectPatient(p.patientId, p.name)} role="button" tabIndex={0}>
+                    <div style={ddStyles.patientName}>{p.name} <span style={ddStyles.patientId}>{p.patientId}</span>{p.entrySource === "emergency" && <span style={ddStyles.emergencyTag}>EMERGENCY</span>}{p.entrySource === "walk-in" && <span style={ddStyles.walkinTag}>WALK-IN</span>}</div>
                     <div style={ddStyles.patientMeta}>{p.phone} · DOB {p.dob}</div>
                   </div>
                   <span style={{ ...ddStyles.waitingTag, ...(sev === "high" ? ddStyles.waitingHigh : sev === "medium" ? ddStyles.waitingMedium : ddStyles.waitingLow) }}>{waitingLabel(p.checkInAt)}</span>
-                  <ChevronRight size={15} color="#B0B5B1" />
+                  <button style={ddStyles.removeQueueBtn} title="Remove from queue" onClick={(e) => { e.stopPropagation(); if (window.confirm(`Remove ${p.name} from the live queue?`)) removeFromQueue(p.id); }}><X size={13} /></button>
+                  <ChevronRight size={15} color="#B0B5B1" onClick={() => onSelectPatient(p.patientId, p.name)} style={{ cursor: "pointer" }} />
                 </div>
               );
             })}
@@ -538,9 +547,9 @@ function DoctorDashboardScreen({ onSelectPatient, allPatients, session, vaccinat
         {rowTab === "checkedout" && (
           <div style={ddStyles.rowList}>
             {filteredCheckedOut.map((p) => (
-              <div key={p.id} style={ddStyles.patientRow} onClick={() => onSelectPatient(p.id, p.name)} role="button" tabIndex={0}>
+              <div key={p.id} style={ddStyles.patientRow} onClick={() => onSelectPatient(p.patientId, p.name)} role="button" tabIndex={0}>
                 <div style={ddStyles.avatarSmall}>{p.name.charAt(0)}</div>
-                <div style={ddStyles.patientMain}><div style={ddStyles.patientName}>{p.name} <span style={ddStyles.patientId}>{p.id}</span></div><div style={ddStyles.patientMeta}>{p.phone} · DOB {p.dob}</div></div>
+                <div style={ddStyles.patientMain}><div style={ddStyles.patientName}>{p.name} <span style={ddStyles.patientId}>{p.patientId}</span></div><div style={ddStyles.patientMeta}>{p.phone} · DOB {p.dob}</div></div>
                 <span style={ddStyles.doneTag}>{p.todaysEntry?.diagnosis || "Consultation done"} · {p.todaysEntry?.hasPrescription ? "Typed" : "Handwritten"}</span>
                 <ChevronRight size={15} color="#B0B5B1" />
               </div>
@@ -570,6 +579,7 @@ const ddStyles = {
   container: { maxWidth: 620, margin: "0 auto" },
   eyebrow: { fontSize: 11, fontWeight: 700, letterSpacing: "0.08em", color: "#0B3B36", marginBottom: 4 },
   h1: { fontSize: 21, fontWeight: 700, color: "#1B2320", margin: "0 0 18px" },
+  removeQueueBtn: { display: "flex", alignItems: "center", justifyContent: "center", width: 24, height: 24, borderRadius: "50%", border: "none", background: "rgba(0,0,0,0.05)", color: "#9B2C2C", cursor: "pointer", padding: 0, marginLeft: 4 },
   searchBlock: { marginBottom: 22 },
   searchInputWrap: { display: "flex", alignItems: "center", gap: 8, background: "#fff", border: "1px solid #DCD9D0", borderRadius: 10, padding: "10px 12px", marginBottom: 8, boxSizing: "border-box" },
   searchInput: { flex: 1, border: "none", outline: "none", fontSize: 14, fontFamily: "inherit", background: "transparent" },
@@ -602,9 +612,18 @@ const ddStyles = {
    ========================================================================== */
 function todayAt(hour, minute) { const d = new Date(); d.setHours(hour, minute, 0, 0); return d; }
 
-function ReceptionDashboardScreen({ onSelectPatient, allPatients, appointments, setAppointments, vaccinationRecords, setVitalsRecords, rooms, session }) {
+function ReceptionDashboardScreen({ onSelectPatient, allPatients, appointments, setAppointments, vaccinationRecords, setVitalsRecords, rooms, session, patientHistoryRecords }) {
   const [checkInFor, setCheckInFor] = useState(null);
   const [entryPickerType, setEntryPickerType] = useState(null);
+  const [selectedDate, setSelectedDate] = useState(todayISO());
+  const [viewTab, setViewTab] = useState("appointments");
+  const isToday = selectedDate === todayISO();
+
+  function shiftDate(days) {
+    const d = new Date(selectedDate);
+    d.setDate(d.getDate() + days);
+    setSelectedDate(d.toISOString().split("T")[0]);
+  }
 
   function formatSlotTime(d) { return d.toLocaleTimeString("en-IN", { hour: "numeric", minute: "2-digit", hour12: true }); }
   function isLate(d) { return Date.now() > d.getTime(); }
@@ -642,6 +661,12 @@ function ReceptionDashboardScreen({ onSelectPatient, allPatients, appointments, 
     }
     setCheckInFor(null);
   }
+  // Same undo as the Doctor Dashboard has — reception can also pull someone back
+  // out of the live queue (checked in by mistake, patient left before being seen, etc.).
+  function removeFromQueue(apptId) {
+    setAppointments((prev) => prev.map((a) => (a.id === apptId ? { ...a, checkedIn: false, checkInAt: null } : a)));
+    supabase.from("appointments").update({ checked_in: false, check_in_at: null }).eq("id", apptId).then(({ error }) => { if (error) console.error("Failed to remove from queue", error); });
+  }
   function selectEntry(patient) {
     const already = appointments.some((a) => a.patientId === patient.id && a.dateISO === todayISO() && a.status !== "cancelled" && a.entrySource !== "appointment-desk");
     const entry = already
@@ -663,8 +688,9 @@ function ReceptionDashboardScreen({ onSelectPatient, allPatients, appointments, 
   // Everything below is derived live from the single shared `appointments` array —
   // Appointment Desk bookings, walk-ins, and emergencies all live in it together, so
   // a booking, reschedule, or cancel made on the Appointment Desk shows up here instantly.
+  // Defaults to today but selectedDate lets reception look at any other day too.
   const todayList = (appointments || [])
-    .filter((a) => a.dateISO === todayISO() && a.status !== "cancelled")
+    .filter((a) => a.dateISO === selectedDate && a.status !== "cancelled")
     .map((a) => ({
       ...a,
       name: a.name || a.patientName,
@@ -685,36 +711,79 @@ function ReceptionDashboardScreen({ onSelectPatient, allPatients, appointments, 
     return 0;
   });
 
+  // Live queue: checked in today, waiting to be seen (no consultation recorded yet
+  // today) — same definition the Doctor Dashboard uses, so both sides agree on who's
+  // actually still waiting.
+  const todayLabel = new Date().toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" });
+  const liveQueueList = (appointments || [])
+    .filter((a) => a.checkedIn && a.dateISO === todayISO() && !(patientHistoryRecords?.[a.patientId] || []).some((h) => h.date === todayLabel))
+    .map((a) => ({ ...a, name: a.name || a.patientName, isEmergency: a.entrySource === "emergency" }))
+    .sort((a, b) => {
+      if (a.isEmergency && !b.isEmergency) return -1;
+      if (b.isEmergency && !a.isEmergency) return 1;
+      return (a.checkInAt || 0) - (b.checkInAt || 0);
+    });
+
   return (
     <div style={rdStyles.page}>
       <div style={rdStyles.container}>
         <div style={rdStyles.headerRow}>
-          <div><div style={rdStyles.eyebrow}>RECEPTION · DASHBOARD</div><h1 style={rdStyles.h1}>Today's appointments</h1></div>
+          <div><div style={rdStyles.eyebrow}>RECEPTION · DASHBOARD</div><h1 style={rdStyles.h1}>{viewTab === "livequeue" ? "Live queue" : isToday ? "Today's appointments" : `Appointments — ${fmtDate(selectedDate)}`}</h1></div>
           <div style={rdStyles.headerBtnRow}>
             <button style={rdStyles.addWalkInBtn} onClick={() => setEntryPickerType("walk-in")}><UserPlus size={15} />Add walk-in</button>
             <button style={rdStyles.addEmergencyBtn} onClick={() => setEntryPickerType("emergency")}><AlertTriangle size={15} />Add emergency</button>
           </div>
         </div>
-        <div style={rdStyles.rowList}>
-          {sorted.map((a) => (
-            <div key={a.id} style={{ ...rdStyles.patientRow, ...(a.isEmergency && !a.checkedIn ? rdStyles.patientRowEmergency : {}) }}>
-              <div style={rdStyles.avatarSmall} onClick={() => onSelectPatient(a.id, a.name)}>{a.name.charAt(0)}</div>
-              <div style={rdStyles.patientMain} onClick={() => onSelectPatient(a.id, a.name)} role="button" tabIndex={0}>
-                <div style={rdStyles.patientName}>{a.name} <span style={rdStyles.patientId}>{a.id}</span>{a.isEmergency && <span style={rdStyles.emergencyNameTag}>EMERGENCY</span>}</div>
-                <div style={rdStyles.patientMeta}>{a.phone} · {a.doctor}{a.entrySource ? "" : ` · ${a.appointmentType || "New Consultation"}`}</div>
-              </div>
-              {a.checkedIn ? (
-                <span style={rdStyles.waitingTag}><CheckCircle2 size={12} style={{ marginRight: 4, verticalAlign: -2 }} />{waitingLabel(a.checkInAt)}</span>
-              ) : a.slotTime ? (
-                <><span style={{ ...rdStyles.slotTag, ...(isLate(a.slotTime) ? rdStyles.slotTagLate : {}) }}><Clock size={12} style={{ marginRight: 4, verticalAlign: -2 }} />{formatSlotTime(a.slotTime)}{isLate(a.slotTime) && " (Late)"}</span>
-                <button style={rdStyles.checkInBtn} onClick={() => setCheckInFor(a)}>Check in</button></>
-              ) : (
-                <><span style={a.isEmergency ? rdStyles.emergencyTag : rdStyles.walkinTag}>{a.isEmergency ? "Emergency" : "Walk-in"}</span>
-                <button style={rdStyles.checkInBtn} onClick={() => setCheckInFor(a)}>Check in</button></>
-              )}
-            </div>
-          ))}
+        <div style={rdStyles.tabRow}>
+          <button style={{ ...rdStyles.tabBtn, ...(viewTab === "appointments" ? rdStyles.tabBtnActive : {}) }} onClick={() => setViewTab("appointments")}>Appointments</button>
+          <button style={{ ...rdStyles.tabBtn, ...(viewTab === "livequeue" ? rdStyles.tabBtnActive : {}) }} onClick={() => setViewTab("livequeue")}>Live queue{liveQueueList.length > 0 ? ` (${liveQueueList.length})` : ""}</button>
         </div>
+        {viewTab === "appointments" ? (
+          <>
+            <div style={rdStyles.dateNavRow}>
+              <button style={rdStyles.dateNavBtn} onClick={() => shiftDate(-1)}>← Prev day</button>
+              <input type="date" style={rdStyles.dateNavInput} value={selectedDate} onChange={(e) => setSelectedDate(e.target.value)} />
+              {!isToday && <button style={rdStyles.dateNavBtn} onClick={() => setSelectedDate(todayISO())}>Today</button>}
+              <button style={rdStyles.dateNavBtn} onClick={() => shiftDate(1)}>Next day →</button>
+            </div>
+            <div style={rdStyles.rowList}>
+              {sorted.length === 0 && <div style={rdStyles.emptyNote}>No appointments for this date.</div>}
+              {sorted.map((a) => (
+                <div key={a.id} style={{ ...rdStyles.patientRow, ...(a.isEmergency && !a.checkedIn ? rdStyles.patientRowEmergency : {}) }}>
+                  <div style={rdStyles.avatarSmall} onClick={() => onSelectPatient(a.patientId, a.name)}>{a.name.charAt(0)}</div>
+                  <div style={rdStyles.patientMain} onClick={() => onSelectPatient(a.patientId, a.name)} role="button" tabIndex={0}>
+                    <div style={rdStyles.patientName}>{a.name} <span style={rdStyles.patientId}>{a.patientId}</span>{a.isEmergency && <span style={rdStyles.emergencyNameTag}>EMERGENCY</span>}</div>
+                    <div style={rdStyles.patientMeta}>{a.phone} · {a.doctor}{a.entrySource ? "" : ` · ${a.appointmentType || "New Consultation"}`}</div>
+                  </div>
+                  {a.checkedIn ? (
+                    <span style={rdStyles.waitingTag}><CheckCircle2 size={12} style={{ marginRight: 4, verticalAlign: -2 }} />{waitingLabel(a.checkInAt)}</span>
+                  ) : a.slotTime ? (
+                    <><span style={{ ...rdStyles.slotTag, ...(isLate(a.slotTime) ? rdStyles.slotTagLate : {}) }}><Clock size={12} style={{ marginRight: 4, verticalAlign: -2 }} />{formatSlotTime(a.slotTime)}{isLate(a.slotTime) && " (Late)"}</span>
+                    {isToday && <button style={rdStyles.checkInBtn} onClick={() => setCheckInFor(a)}>Check in</button>}</>
+                  ) : (
+                    <><span style={a.isEmergency ? rdStyles.emergencyTag : rdStyles.walkinTag}>{a.isEmergency ? "Emergency" : "Walk-in"}</span>
+                    {isToday && <button style={rdStyles.checkInBtn} onClick={() => setCheckInFor(a)}>Check in</button>}</>
+                  )}
+                </div>
+              ))}
+            </div>
+          </>
+        ) : (
+          <div style={rdStyles.rowList}>
+            {liveQueueList.length === 0 && <div style={rdStyles.emptyNote}>No one is currently waiting to be seen.</div>}
+            {liveQueueList.map((a) => (
+              <div key={a.id} style={{ ...rdStyles.patientRow, ...(a.isEmergency ? rdStyles.patientRowEmergency : {}) }}>
+                <div style={rdStyles.avatarSmall} onClick={() => onSelectPatient(a.patientId, a.name)}>{a.name.charAt(0)}</div>
+                <div style={rdStyles.patientMain} onClick={() => onSelectPatient(a.patientId, a.name)} role="button" tabIndex={0}>
+                  <div style={rdStyles.patientName}>{a.name} <span style={rdStyles.patientId}>{a.patientId}</span>{a.isEmergency && <span style={rdStyles.emergencyNameTag}>EMERGENCY</span>}</div>
+                  <div style={rdStyles.patientMeta}>{a.phone} · {a.doctor}</div>
+                </div>
+                <span style={rdStyles.waitingTag}><CheckCircle2 size={12} style={{ marginRight: 4, verticalAlign: -2 }} />{waitingLabel(a.checkInAt)}</span>
+                <button style={rdStyles.removeQueueBtn} title="Remove from queue" onClick={() => { if (window.confirm(`Remove ${a.name} from the live queue?`)) removeFromQueue(a.id); }}><X size={13} /></button>
+              </div>
+            ))}
+          </div>
+        )}
         <RoomsAndVaccinesSection vaccinationRecords={vaccinationRecords} allPatients={allPatients} rooms={rooms} />
       </div>
       {entryPickerType && <WalkInPicker title={entryPickerType === "emergency" ? "Add emergency patient" : "Add walk-in"} patients={allPatients} onCancel={() => setEntryPickerType(null)} onSelect={selectEntry} />}
@@ -799,6 +868,14 @@ const rdStyles = {
   headerBtnRow: { display: "flex", gap: 8, flexWrap: "wrap" },
   addWalkInBtn: { display: "flex", alignItems: "center", gap: 6, background: "#0B3B36", color: "#fff", border: "none", borderRadius: 8, padding: "9px 14px", fontSize: 12.5, fontWeight: 600, cursor: "pointer" },
   addEmergencyBtn: { display: "flex", alignItems: "center", gap: 6, background: "#9B2C2C", color: "#fff", border: "none", borderRadius: 8, padding: "9px 14px", fontSize: 12.5, fontWeight: 600, cursor: "pointer" },
+  tabRow: { display: "flex", gap: 4, borderBottom: "1px solid #E8E6DF", marginBottom: 14 },
+  tabBtn: { padding: "9px 12px", fontSize: 13, fontWeight: 600, color: "#8A928F", background: "none", border: "none", borderBottom: "2px solid transparent", cursor: "pointer", whiteSpace: "nowrap" },
+  tabBtnActive: { color: "#0B3B36", borderBottom: "2px solid #0B3B36" },
+  removeQueueBtn: { display: "flex", alignItems: "center", justifyContent: "center", width: 26, height: 26, borderRadius: "50%", border: "none", background: "rgba(0,0,0,0.05)", color: "#9B2C2C", cursor: "pointer", padding: 0, marginLeft: 6, flexShrink: 0 },
+  dateNavRow: { display: "flex", alignItems: "center", gap: 8, marginBottom: 16, flexWrap: "wrap" },
+  dateNavBtn: { fontSize: 12, fontWeight: 600, color: "#0B3B36", background: "#fff", border: "1px solid #DCD9D0", borderRadius: 8, padding: "7px 12px", cursor: "pointer" },
+  dateNavInput: { fontSize: 12.5, fontWeight: 600, color: "#1B2320", background: "#fff", border: "1px solid #DCD9D0", borderRadius: 8, padding: "7px 10px" },
+  emptyNote: { fontSize: 13, color: "#8A928F", padding: "20px 4px", textAlign: "center" },
   patientRowEmergency: { border: "1px solid #F5C6C6", background: "#FFFAFA" },
   emergencyNameTag: { fontSize: 9.5, fontWeight: 700, color: "#9B2C2C", background: "#FDECEC", padding: "2px 6px", borderRadius: 4, marginLeft: 6 },
   emergencyTag: { fontSize: 11.5, fontWeight: 700, color: "#9B2C2C", background: "#FDECEC", padding: "4px 9px", borderRadius: 20 },
@@ -1530,7 +1607,13 @@ const regStyles = {
 function PatientsTab({ onSelectPatient, patients, onAddPatient }) {
   const [showRegistration, setShowRegistration] = useState(false);
   const [query, setQuery] = useState("");
-  const results = patients.filter((p) => !query.trim() || p.name.toLowerCase().includes(query.toLowerCase()) || p.phone.includes(query) || p.id.toLowerCase().includes(query.toLowerCase()));
+  const results = patients.filter((p) => {
+    const q = query.trim();
+    if (!q) return true;
+    const qLower = q.toLowerCase();
+    const qDigits = q.replace(/[^\d]/g, "");
+    return p.name.toLowerCase().includes(qLower) || p.phone.includes(q) || p.id.toLowerCase().includes(qLower) || (qDigits.length > 0 && toDDMMYY(p.dob).startsWith(qDigits));
+  });
   if (showRegistration) return <PatientRegistrationScreen existingPatients={patients} onCancel={() => setShowRegistration(false)} onDone={(np) => { onAddPatient(np); setShowRegistration(false); }} />;
   return (
     <div style={patStyles.page}>
@@ -1539,7 +1622,7 @@ function PatientsTab({ onSelectPatient, patients, onAddPatient }) {
           <div><div style={patStyles.eyebrow}>PATIENTS</div><h1 style={patStyles.h1}>All patients</h1></div>
           <button style={patStyles.addBtn} onClick={() => setShowRegistration(true)}><UserPlus size={16} />Add new patient</button>
         </div>
-        <div style={patStyles.searchInputWrap}><Search size={15} color="#8A928F" /><input style={patStyles.searchInput} value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search by name, phone, or ID…" /></div>
+        <div style={patStyles.searchInputWrap}><Search size={15} color="#8A928F" /><input style={patStyles.searchInput} value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search by name, phone, ID, or DOB (ddmmyy)…" /></div>
         <div style={patStyles.list}>
           {results.map((p) => (
             <div key={p.id} style={patStyles.row} onClick={() => onSelectPatient(p.id, p.name)} role="button" tabIndex={0}>
@@ -1868,6 +1951,40 @@ function PatientProfileScreen({ patient, onClose, session, printSettings, vaccin
       return next;
     });
   }
+
+  // Shell only fetches everyone's records once, at login. That's fine for the session
+  // that made a change, but a DIFFERENT already-open login (e.g. a doctor's own tab)
+  // won't see it until it refetches. So on top of Shell's cache, re-pull this specific
+  // patient's own vitals/history/vaccinations fresh every time their profile is opened —
+  // covers the common case (reception admits/discharges IPD, doctor opens that patient
+  // next) without needing full realtime infrastructure.
+  useEffect(() => {
+    let cancelled = false;
+    async function refreshPatientData() {
+      const [vitalsRes, consultRes, vaxRes] = await Promise.all([
+        supabase.from("vitals").select("*").eq("patient_id", patient.id),
+        supabase.from("consultations").select("*").eq("patient_id", patient.id),
+        supabase.from("vaccination_records").select("*").eq("patient_id", patient.id).maybeSingle(),
+      ]);
+      if (cancelled) return;
+      if (vitalsRes.data) {
+        const mapped = vitalsRes.data.map(vitalsFromDb).sort((a, b) => new Date(b.dateISO) - new Date(a.dateISO));
+        setVitalsHistoryLocal(mapped);
+        if (setVitalsRecords) setVitalsRecords((recs) => ({ ...recs, [patient.id]: mapped }));
+      }
+      if (consultRes.data) {
+        const mapped = consultRes.data.map(consultationFromDb);
+        setHistoryLocal(mapped);
+        if (setPatientHistoryRecords) setPatientHistoryRecords((recs) => ({ ...recs, [patient.id]: mapped }));
+      }
+      if (vaxRes.data) {
+        setVaxScheduleLocal(vaxRes.data.schedule);
+        if (setVaccinationRecords) setVaccinationRecords((recs) => ({ ...recs, [patient.id]: vaxRes.data.schedule }));
+      }
+    }
+    refreshPatientData();
+    return () => { cancelled = true; };
+  }, [patient.id]);
 
   function saveProfile() {
     setProfileData(profileDraft);
@@ -2522,7 +2639,7 @@ function PrescriptionViewer({ entry, patient, onBack, printSettings, vaxList, vi
               );
             })()}
             {ps.includeFollowUp && <RxSection label="Follow-up" value={rx.followUp} />}
-            {ps.includeGrowthChart && (
+            {ps.includeGrowthChart && ageInMonths(patient.dob) <= 216 && (
               <div style={ppStyles.rxSectionBlock}>
                 <div style={ppStyles.rxSectionLabel}>Growth Chart</div>
                 <GrowthChartSVG patient={patient} vitalsHistory={vitalsHistory} />
@@ -2551,12 +2668,12 @@ function HandwrittenPrescriptionView({ patient, doctorName, onBack, printSetting
   const latestVitals = (vitalsHistory && vitalsHistory[0]) || null;
   return (
     <div style={ppStyles.page} className="rx-page-wrap">
-      <div style={ppStyles.card}>
+      <div style={{ ...ppStyles.card, display: "flex", flexDirection: "column", minHeight: `calc(297mm - ${ps.marginTop + ps.marginBottom}mm)` }}>
         <div style={ppStyles.rxViewerHeader} className="no-print">
           <button style={ppStyles.backBtnPlain} onClick={onBack}>← Back to profile</button>
           <button style={ppStyles.printRecordBtnDark} onClick={handlePrint}><Printer size={13} style={{ marginRight: 6 }} />Print</button>
         </div>
-        <div style={{ padding: "10px 20px 24px" }}>
+        <div style={{ padding: "10px 20px 24px", display: "flex", flexDirection: "column", flex: 1 }}>
           {ps.includeClinicHeader && (
             <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 6 }}>
               <div style={{ width: 38, height: 38, borderRadius: 9, background: "#E7EFEC", display: "flex", alignItems: "center", justifyContent: "center" }}><Stethoscope size={20} color="#0B3B36" /></div>
@@ -2579,7 +2696,10 @@ function HandwrittenPrescriptionView({ patient, doctorName, onBack, printSetting
             <div style={{ fontSize: 11.5, color: "#8A928F", fontStyle: "italic", marginTop: 10 }}>No vitals on record for this patient yet.</div>
           )}
           <div style={ppStyles.divider} />
-          <div style={{ display: "flex", flexDirection: "column", gap: 28, marginTop: 6, marginBottom: 24 }}>
+          {/* Ruled writing area stretches to fill all remaining page height (flex:1 + space-between),
+              so the signature block below always lands at the true bottom of the sheet regardless
+              of how much header content is above it — instead of floating wherever 12 fixed lines end. */}
+          <div style={{ display: "flex", flexDirection: "column", justifyContent: "space-between", gap: 20, marginTop: 6, marginBottom: 24, flex: 1 }}>
             {Array.from({ length: 12 }).map((_, i) => <div key={i} style={{ borderBottom: "1px solid #DCD9D0", height: 1 }} />)}
           </div>
           <div style={{ display: "flex", justifyContent: "flex-end", borderTop: "1px solid #E8E6DF", paddingTop: 14 }}>
@@ -2591,7 +2711,7 @@ function HandwrittenPrescriptionView({ patient, doctorName, onBack, printSetting
           </div>
         </div>
       </div>
-      <style>{`@media print { .no-print { display: none !important; } @page { margin: ${ps.marginTop}mm ${ps.marginRight}mm ${ps.marginBottom}mm ${ps.marginLeft}mm; } }`}</style>
+      <style>{`@media print { .no-print { display: none !important; } .rx-page-wrap { min-height: 0 !important; padding: 0 !important; } @page { margin: ${ps.marginTop}mm ${ps.marginRight}mm ${ps.marginBottom}mm ${ps.marginLeft}mm; } }`}</style>
     </div>
   );
 }
