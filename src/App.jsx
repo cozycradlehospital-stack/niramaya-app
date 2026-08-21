@@ -974,8 +974,8 @@ function todayISO() { return new Date().toISOString().split("T")[0]; }
    entity. Kept in one place so the shape contract between the client and
    Postgres is explicit and easy to audit.
    ========================================================================== */
-const patientFromDb = (r) => ({ id: r.id, name: r.name, dob: r.dob, sex: r.sex, phone: r.phone, fatherName: r.father_name, motherName: r.mother_name });
-const patientToDb = (p) => ({ id: p.id, name: p.name, dob: p.dob || null, sex: p.sex, phone: p.phone, father_name: p.fatherName || null, mother_name: p.motherName || null });
+const patientFromDb = (r) => ({ id: r.id, name: r.name, dob: r.dob, sex: r.sex, phone: r.phone, fatherName: r.father_name, motherName: r.mother_name, address: r.address });
+const patientToDb = (p) => ({ id: p.id, name: p.name, dob: p.dob || null, sex: p.sex, phone: p.phone, father_name: p.fatherName || null, mother_name: p.motherName || null, address: p.address || null });
 
 const appointmentFromDb = (r) => ({
   id: r.id, patientId: r.patient_id, patientName: r.patient_name, phone: r.phone,
@@ -1546,7 +1546,7 @@ function countMatches(candidate, existing) {
 
 function PatientRegistrationScreen({ existingPatients, onDone, onCancel }) {
   const [dobMode, setDobMode] = useState("exact");
-  const [form, setForm] = useState({ name: "", dob: "", approxYears: "", approxMonths: "", sex: "", phone: "", fatherName: "", motherName: "" });
+  const [form, setForm] = useState({ name: "", dob: "", approxYears: "", approxMonths: "", sex: "", phone: "", fatherName: "", motherName: "", address: "" });
   const [errors, setErrors] = useState({});
   const [successId, setSuccessId] = useState(null);
   const [duplicateMatch, setDuplicateMatch] = useState(null);
@@ -1576,7 +1576,7 @@ function PatientRegistrationScreen({ existingPatients, onDone, onCancel }) {
     const e = validate();
     setErrors(e);
     if (Object.keys(e).length > 0) return;
-    const candidate = { name: form.name.trim(), dob: effectiveDob, sex: form.sex, phone: form.phone.trim(), fatherName: form.fatherName.trim() || null, motherName: form.motherName.trim() || null };
+    const candidate = { name: form.name.trim(), dob: effectiveDob, sex: form.sex, phone: form.phone.trim(), fatherName: form.fatherName.trim() || null, motherName: form.motherName.trim() || null, address: form.address.trim() || null };
     let matched = null;
     for (const p of existingPatients) { if (countMatches(candidate, p) >= 3) { matched = p; break; } }
     if (matched) { setDuplicateMatch(matched); return; }
@@ -1615,6 +1615,7 @@ function PatientRegistrationScreen({ existingPatients, onDone, onCancel }) {
             <label style={regStyles.label}>Father's name<input style={inputStyle(false)} value={form.fatherName} onChange={(e) => update("fatherName", e.target.value)} /></label>
             <label style={regStyles.label}>Mother's name<input style={inputStyle(false)} value={form.motherName} onChange={(e) => update("motherName", e.target.value)} /></label>
           </div>
+          <label style={regStyles.label}>Address<textarea style={{ ...inputStyle(false), minHeight: 60, resize: "vertical", fontFamily: "inherit" }} value={form.address} onChange={(e) => update("address", e.target.value)} placeholder="House no., street, city, state, PIN" /></label>
           {duplicateMatch && (
             <div style={regStyles.dupBox}>
               <div style={regStyles.dupHeader}><AlertTriangle size={16} color="#9B2C2C" />Possible duplicate</div>
@@ -1947,6 +1948,7 @@ function buildMockPatientFor(basePatient) {
     phone: basePatient.phone || "",
     fatherName: basePatient.fatherName || "",
     motherName: basePatient.motherName || "",
+    address: basePatient.address || "",
     vitals: {
       recordedOn: null,
       weight: { value: "", unit: "kg" }, height: { value: "", unit: "cm" }, headCirc: { value: "", unit: "cm" },
@@ -2134,6 +2136,7 @@ function PatientProfileScreen({ patient, onClose, session, printSettings, vaccin
                   <EditField label="Phone" value={profileDraft.phone} onChange={(v) => setProfileDraft({ ...profileDraft, phone: v })} />
                   <EditField label="Father's name" value={profileDraft.fatherName || ""} onChange={(v) => setProfileDraft({ ...profileDraft, fatherName: v })} />
                   <EditField label="Mother's name" value={profileDraft.motherName || ""} onChange={(v) => setProfileDraft({ ...profileDraft, motherName: v })} />
+                  <EditField label="Address" value={profileDraft.address || ""} onChange={(v) => setProfileDraft({ ...profileDraft, address: v })} />
                 </div>
                 <div style={ppStyles.editActions}><button style={ppStyles.saveBtn} onClick={saveProfile}>Save changes</button><button style={ppStyles.cancelBtn} onClick={() => setEditingProfile(false)}>Cancel</button></div>
               </div>
@@ -2146,6 +2149,7 @@ function PatientProfileScreen({ patient, onClose, session, printSettings, vaccin
                   <InfoRow icon={<Phone size={14} />} label="Phone" value={profileData.phone} />
                   {profileData.fatherName && <InfoRow icon={<User size={14} />} label="Father's name" value={profileData.fatherName} />}
                   {profileData.motherName && <InfoRow icon={<User size={14} />} label="Mother's name" value={profileData.motherName} />}
+                  {profileData.address && <InfoRow icon={<MapPin size={14} />} label="Address" value={profileData.address} />}
                   <InfoRow icon={<FileText size={14} />} label="Patient ID" value={profileData.id} />
                 </div>
                 {role === "doctor" ? <button style={ppStyles.editTrigger} onClick={() => { setProfileDraft(profileData); setEditingProfile(true); }}>Edit profile details</button> : <div style={ppStyles.lockedNote}>Only a doctor login can edit profile details.</div>}
@@ -2593,21 +2597,26 @@ function PrescriptionViewer({ entry, patient, onBack, printSettings, vaxList, vi
         )}
         <div style={ppStyles.rxViewerPatient}>
           <div style={ppStyles.rxViewerName}>{patient.name} <span style={ppStyles.idTag}>{patient.id}</span></div>
-          <div style={ppStyles.rxViewerMeta}>{entry.date} · {entry.consultingDoctor || entry.doctor}</div>
+          <div style={ppStyles.rxViewerMeta}>{patient.sex}{patient.dob && ` · ${calcAge(patient.dob)}`} · {entry.date} · {entry.consultingDoctor || entry.doctor}</div>
           {entry.bookedDoctor && entry.consultingDoctor && entry.bookedDoctor !== entry.consultingDoctor && (
             <div style={ppStyles.crossCoverageBanner}>⚠ Appointment booked for {entry.bookedDoctor} · consultation completed by {entry.consultingDoctor}</div>
           )}
-          {visitVitals ? (
-            <div style={ppStyles.rxVitalsRow}>
-              <span>Wt: {visitVitals.weight?.value || "—"} {visitVitals.weight?.unit || ""}</span>
-              <span>Ht: {visitVitals.height?.value || "—"} {visitVitals.height?.unit || ""}</span>
-              <span>Head circ.: {visitVitals.headCirc?.value || "—"} {visitVitals.headCirc?.unit || ""}</span>
-              <span>Temp: {visitVitals.temp?.value || "—"} {visitVitals.temp?.unit || ""}</span>
-              <span>SpO2: {visitVitals.spo2?.value || "—"} {visitVitals.spo2?.unit || ""}</span>
-            </div>
-          ) : (
-            <div style={ppStyles.rxVitalsMissing}>No vitals on record for this patient yet.</div>
-          )}
+          {(() => {
+            // Only print vitals that actually have a value — an empty "—" for
+            // something never recorded (e.g. head circumference on an adult) just
+            // wastes space and looks like a missed measurement rather than N/A.
+            const enteredVitals = visitVitals ? [
+              ["Wt", visitVitals.weight], ["Ht", visitVitals.height], ["Head circ.", visitVitals.headCirc],
+              ["PR", visitVitals.pr], ["RR", visitVitals.rr], ["Temp", visitVitals.temp], ["SpO2", visitVitals.spo2],
+            ].filter(([, v]) => v && v.value !== undefined && v.value !== null && v.value !== "") : [];
+            return enteredVitals.length > 0 ? (
+              <div style={ppStyles.rxVitalsRow}>
+                {enteredVitals.map(([label, v]) => <span key={label}>{label}: {v.value} {v.unit || ""}</span>)}
+              </div>
+            ) : (
+              <div style={ppStyles.rxVitalsMissing}>No vitals on record for this patient yet.</div>
+            );
+          })()}
         </div>
         <div style={ppStyles.divider} />
         {editing ? (
@@ -2743,15 +2752,19 @@ function HandwrittenPrescriptionView({ patient, doctorName, onBack, printSetting
             <div style={{ fontSize: 12.5, color: "#5B635F", fontWeight: 600 }}>{today}</div>
           </div>
           <div style={{ fontSize: 12, color: "#5B635F", fontWeight: 600, marginTop: 4 }}>{doctorName}</div>
-          {latestVitals ? (
-            <div style={{ display: "flex", gap: 18, marginTop: 10, fontSize: 12.5, color: "#3C4441", fontWeight: 600, flexWrap: "wrap" }}>
-              <span>Wt: {latestVitals.weight?.value || "—"} {latestVitals.weight?.unit || ""}</span>
-              <span>Ht: {latestVitals.height?.value || "—"} {latestVitals.height?.unit || ""}</span>
-              <span>Head circ.: {latestVitals.headCirc?.value || "—"} {latestVitals.headCirc?.unit || ""}</span>
-            </div>
-          ) : (
-            <div style={{ fontSize: 11.5, color: "#8A928F", fontStyle: "italic", marginTop: 10 }}>No vitals on record for this patient yet.</div>
-          )}
+          {(() => {
+            const enteredVitals = latestVitals ? [
+              ["Wt", latestVitals.weight], ["Ht", latestVitals.height], ["Head circ.", latestVitals.headCirc],
+              ["PR", latestVitals.pr], ["RR", latestVitals.rr], ["Temp", latestVitals.temp], ["SpO2", latestVitals.spo2],
+            ].filter(([, v]) => v && v.value !== undefined && v.value !== null && v.value !== "") : [];
+            return enteredVitals.length > 0 ? (
+              <div style={{ display: "flex", gap: 18, marginTop: 10, fontSize: 12.5, color: "#3C4441", fontWeight: 600, flexWrap: "wrap" }}>
+                {enteredVitals.map(([label, v]) => <span key={label}>{label}: {v.value} {v.unit || ""}</span>)}
+              </div>
+            ) : (
+              <div style={{ fontSize: 11.5, color: "#8A928F", fontStyle: "italic", marginTop: 10 }}>No vitals on record for this patient yet.</div>
+            );
+          })()}
           <div style={ppStyles.divider} />
           {/* Blank writing area — flex:1 fills whatever page height remains below the
               header, so the signature always lands at the true bottom of the sheet. */}
@@ -3028,35 +3041,37 @@ function GrowthChartMetric({ patient, vitalsHistory, metric }) {
   const maxAge = isHeadCirc ? 60 : 216;
   if (ageMonths > maxAge || points.length === 0) return <div style={ppStyles.growthPlaceholder}>{label}: tracked for {isHeadCirc ? "children up to 5 years" : "children 0–18 years"} — not applicable, or no {isHeadCirc ? "head circumference" : isWeight ? "weight" : "height"} recorded yet.</div>;
   const ref = refTable[sexKey];
-  const W = 460, H = 190, padL = 32, padR = 10, padT = 12, padB = 22;
+  // Square, small canvas — several of these stack in one column without ballooning
+  // the printed page (previously wide 460x190 charts were the main cause of prints
+  // overflowing onto an extra, mostly-blank page).
+  const W = 200, H = 200, padL = 30, padR = 8, padT = 10, padB = 18;
   const maxVal = Math.max(...ref.map(r => r.p97), ...points.map(p => p.value)) + 2;
   const x = age => padL + (Math.min(age, maxAge) / maxAge) * (W - padL - padR);
   const y = v => H - padB - (Math.min(v, maxVal) / maxVal) * (H - padT - padB);
   const pathFor = key => ref.map((r,i) => `${i === 0 ? "M" : "L"} ${x(r.age).toFixed(1)} ${y(r[key]).toFixed(1)}`).join(" ");
   const patientPath = points.map((p,i) => `${i === 0 ? "M" : "L"} ${x(p.age).toFixed(1)} ${y(p.value).toFixed(1)}`).join(" ");
   const last = points[points.length-1], lastX = x(last.age), lastY = y(last.value);
-  return <div>
-    <div style={{ fontSize: 11, fontWeight: 700, color: "#0B3B36", marginBottom: 4 }}>{label}</div>
-    <svg width="100%" viewBox={`0 0 ${W} ${H}`} style={{ background: "#FBFAF8", border: "1px solid #EEECE5", borderRadius: 8 }}>
+  return <div style={{ maxWidth: 210 }}>
+    <div style={{ fontSize: 10.5, fontWeight: 700, color: "#0B3B36", marginBottom: 4 }}>{label}</div>
+    <svg width={210} height={210} viewBox={`0 0 ${W} ${H}`} style={{ background: "#FBFAF8", border: "1px solid #EEECE5", borderRadius: 8, display: "block" }}>
       <line x1={padL} y1={H-padB} x2={W-padR} y2={H-padB} stroke="#DCD9D0" strokeWidth="1" />
       <line x1={padL} y1={padT} x2={padL} y2={H-padB} stroke="#DCD9D0" strokeWidth="1" />
-      <text x={padL} y={H-6} fontSize="8" fill="#8A928F">{isHeadCirc ? "0m" : "5y"}</text>
-      <text x={W-padR-22} y={H-6} fontSize="8" fill="#8A928F">{isHeadCirc ? "5y" : "18y"}</text>
-      <text x={2} y={padT+6} fontSize="8" fill="#8A928F">{maxVal.toFixed(0)}{unit}</text>
-      <path d={pathFor("p97")} fill="none" stroke="#F0C9A0" strokeWidth="1.2" strokeDasharray="3 2" />
-      <path d={pathFor("p50")} fill="none" stroke="#B0B5B1" strokeWidth="1.2" strokeDasharray="3 2" />
-      <path d={pathFor("p3")} fill="none" stroke="#F0C9A0" strokeWidth="1.2" strokeDasharray="3 2" />
-      <path d={patientPath} fill="none" stroke="#0B3B36" strokeWidth="1.8" />
-      {points.map((p,i) => <circle key={i} cx={x(p.age)} cy={y(p.value)} r="3" fill="#0B3B36" />)}
-      <text x={Math.min(lastX+6,W-40)} y={lastY-6} fontSize="9" fill="#0B3B36" fontWeight="700">{last.value}{unit}</text>
+      <text x={padL} y={H-6} fontSize="7" fill="#8A928F">{isHeadCirc ? "0m" : "5y"}</text>
+      <text x={W-padR-16} y={H-6} fontSize="7" fill="#8A928F">{isHeadCirc ? "5y" : "18y"}</text>
+      <text x={1} y={padT+5} fontSize="7" fill="#8A928F">{maxVal.toFixed(0)}{unit}</text>
+      <path d={pathFor("p97")} fill="none" stroke="#F0C9A0" strokeWidth="1" strokeDasharray="3 2" />
+      <path d={pathFor("p50")} fill="none" stroke="#B0B5B1" strokeWidth="1" strokeDasharray="3 2" />
+      <path d={pathFor("p3")} fill="none" stroke="#F0C9A0" strokeWidth="1" strokeDasharray="3 2" />
+      <path d={patientPath} fill="none" stroke="#0B3B36" strokeWidth="1.6" />
+      {points.map((p,i) => <circle key={i} cx={x(p.age)} cy={y(p.value)} r="2.5" fill="#0B3B36" />)}
+      <text x={Math.min(lastX+5,W-34)} y={lastY-5} fontSize="8" fill="#0B3B36" fontWeight="700">{last.value}{unit}</text>
     </svg>
-    <div style={{ fontSize: 9.5, color: "#B0B5B1", marginTop: 4, fontStyle: "italic" }}>WHO reference format: {label}; plotted against approximate P3/P50/P97 reference values.</div>
   </div>;
 }
 function GrowthChartSVG({ patient, vitalsHistory }) {
   const ageMonths = ageInMonths(patient.dob);
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+    <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
       {ageMonths <= 60 ? <>
         <GrowthChartMetric patient={patient} vitalsHistory={vitalsHistory} metric="weight" />
         <GrowthChartMetric patient={patient} vitalsHistory={vitalsHistory} metric="height" />
