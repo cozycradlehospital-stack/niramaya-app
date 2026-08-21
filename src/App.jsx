@@ -46,6 +46,21 @@ const roleLabel = { admin: "Admin", doctor: "Doctor", receptionist: "Receptionis
 const roleIcon = { admin: ShieldCheck, doctor: Stethoscope, receptionist: ClipboardList, appointment: CalendarClock };
 
 
+const INDIA_TIME_ZONE = "Asia/Kolkata";
+function indiaNow() { return new Date(new Date().toLocaleString("en-US", { timeZone: INDIA_TIME_ZONE })); }
+function indiaDateParts(date = new Date()) {
+  const parts = new Intl.DateTimeFormat("en-CA", { timeZone: INDIA_TIME_ZONE, year: "numeric", month: "2-digit", day: "2-digit" }).formatToParts(date);
+  const get = (type) => parts.find((p) => p.type === type)?.value;
+  return { year: get("year"), month: get("month"), day: get("day") };
+}
+function indiaDateISO(date = new Date()) { const p = indiaDateParts(date); return `${p.year}-${p.month}-${p.day}`; }
+function indiaDateLabel(date = new Date()) { return date.toLocaleDateString("en-IN", { timeZone: INDIA_TIME_ZONE, day: "2-digit", month: "short", year: "numeric" }); }
+function indiaDateTimeLabel(date = new Date()) { return date.toLocaleString("en-IN", { timeZone: INDIA_TIME_ZONE, day: "2-digit", month: "short", year: "numeric", hour: "numeric", minute: "2-digit" }); }
+function isPastIndiaSlot(dateISO, hour, minute) {
+  if (!dateISO || hour == null || minute == null || dateISO !== indiaDateISO()) return false;
+  const now = indiaNow();
+  return hour * 60 + minute < now.getHours() * 60 + now.getMinutes();
+}
 function minutesAgo(mins) { return new Date(Date.now() - mins * 60000); }
 function toDDMMYY(isoDate) {
   const d = new Date(isoDate);
@@ -403,7 +418,7 @@ function Shell({ session, onLogout, accounts, setAccounts, refreshAccounts, room
           />
         ) : activeTab === "dashboard" ? (
           session.role === "receptionist"
-            ? <ReceptionDashboardScreen onSelectPatient={openPatient} allPatients={allPatients} appointments={appointments} setAppointments={setAppointments} vaccinationRecords={vaccinationRecords} setVitalsRecords={setVitalsRecords} rooms={rooms} session={session} patientHistoryRecords={patientHistoryRecords} setPatientHistoryRecords={setPatientHistoryRecords} />
+            ? <ReceptionDashboardScreen onSelectPatient={openPatient} allPatients={allPatients} appointments={appointments} setAppointments={setAppointments} vaccinationRecords={vaccinationRecords} setVitalsRecords={setVitalsRecords} rooms={rooms} session={session} patientHistoryRecords={patientHistoryRecords} setPatientHistoryRecords={setPatientHistoryRecords} doctorNames={doctorNames} />
             : <DoctorDashboardScreen onSelectPatient={openPatient} allPatients={allPatients} session={session} vaccinationRecords={vaccinationRecords} rooms={rooms} appointments={appointments} setAppointments={setAppointments} patientHistoryRecords={patientHistoryRecords} setPatientHistoryRecords={setPatientHistoryRecords} />
         ) : activeTab === "patients" ? (
           <PatientsTab onSelectPatient={openPatient} patients={allPatients} onAddPatient={addPatient} />
@@ -477,7 +492,7 @@ function DoctorDashboardScreen({ onSelectPatient, allPatients, session, vaccinat
   }
 
   function patientDob(id) { const p = allPatients.find((p) => p.id === id); return p ? p.dob : ""; }
-  const todayLabel = new Date().toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" });
+  const todayLabel = indiaDateLabel();
   // Checked in today = live off the single shared appointments store (booked, walk-in,
   // or emergency — doesn't matter which desk it came from), filtered to today's date.
   const checkedInToday = (appointments || []).filter((a) => a.checkedIn && a.dateISO === todayISO());
@@ -487,12 +502,23 @@ function DoctorDashboardScreen({ onSelectPatient, allPatients, session, vaccinat
   const liveQueueReal = checkedInToday
     .filter((a) => !(patientHistoryRecords?.[a.patientId] || []).some((h) => h.date === todayLabel))
     .map((a) => ({ ...a, name: a.name || a.patientName, dob: patientDob(a.patientId) }));
-  const checkedOutReal = checkedInToday
+  const checkedOutMap = new Map();
+  checkedInToday
     .filter((a) => (patientHistoryRecords?.[a.patientId] || []).some((h) => h.date === todayLabel))
-    .map((a) => {
+    .forEach((a) => {
       const todaysEntry = (patientHistoryRecords?.[a.patientId] || []).find((h) => h.date === todayLabel);
-      return { ...a, name: a.name || a.patientName, dob: patientDob(a.patientId), todaysEntry };
+      if (!checkedOutMap.has(a.patientId)) checkedOutMap.set(a.patientId, { ...a, name: a.name || a.patientName, dob: patientDob(a.patientId), todaysEntry });
     });
+  // A prescription can be created directly from a patient's profile without reception
+  // check-in. Those completed consultations must still appear once in Checked out.
+  (allPatients || []).forEach((patient) => {
+    const todaysEntry = (patientHistoryRecords?.[patient.id] || []).find((h) => h.date === todayLabel);
+    if (todaysEntry && !checkedOutMap.has(patient.id)) {
+      const matchingAppt = (appointments || []).find((a) => a.patientId === patient.id && a.dateISO === todayISO() && a.status !== "cancelled");
+      checkedOutMap.set(patient.id, { ...(matchingAppt || {}), id: matchingAppt?.id || `checkout-${patient.id}`, patientId: patient.id, name: patient.name, patientName: patient.name, phone: patient.phone, dob: patient.dob, doctor: matchingAppt?.doctor || todaysEntry.consultingDoctor || todaysEntry.doctor || "—", todaysEntry });
+    }
+  });
+  const checkedOutReal = [...checkedOutMap.values()];
 
   const filteredLiveQueue = useMemo(() => liveQueueReal.filter(matches), [query, searchTab, appointments, patientHistoryRecords]);
   const filteredCheckedOut = useMemo(() => checkedOutReal.filter(matches), [query, searchTab, appointments, patientHistoryRecords]);
@@ -624,9 +650,9 @@ const ddStyles = {
 /* ============================================================================
    RECEPTION DASHBOARD
    ========================================================================== */
-function todayAt(hour, minute) { const d = new Date(); d.setHours(hour, minute, 0, 0); return d; }
+function todayAt(hour, minute) { const d = indiaNow(); d.setHours(hour, minute, 0, 0); return d; }
 
-function ReceptionDashboardScreen({ onSelectPatient, allPatients, appointments, setAppointments, vaccinationRecords, setVitalsRecords, rooms, session, patientHistoryRecords, setPatientHistoryRecords }) {
+function ReceptionDashboardScreen({ onSelectPatient, allPatients, appointments, setAppointments, vaccinationRecords, setVitalsRecords, rooms, session, patientHistoryRecords, setPatientHistoryRecords, doctorNames = [] }) {
   const [checkInFor, setCheckInFor] = useState(null);
   const [entryPickerType, setEntryPickerType] = useState(null);
   const [selectedDate, setSelectedDate] = useState(todayISO());
@@ -666,9 +692,9 @@ function ReceptionDashboardScreen({ onSelectPatient, allPatients, appointments, 
     if (apptErr) console.error("Failed to save check-in", apptErr);
     if (setVitalsRecords && appt) {
       const now = new Date();
-      const recordedOnStr = now.toLocaleString("en-IN", { day: "2-digit", month: "short", year: "numeric", hour: "numeric", minute: "2-digit" });
-      const dateLabel = now.toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" });
-      const newEntry = { ...vitals, recordedOn: recordedOnStr, dateLabel, dateISO: now.toISOString() };
+      const recordedOnStr = indiaDateTimeLabel(now);
+      const dateLabel = indiaDateLabel(now);
+      const newEntry = { ...vitals, recordedOn: recordedOnStr, dateLabel, dateISO: indiaDateISO(now) };
       const patientId = appt.patientId;
       let existingToday = null;
       setVitalsRecords((recs) => {
@@ -696,10 +722,15 @@ function ReceptionDashboardScreen({ onSelectPatient, allPatients, appointments, 
     setAppointments((prev) => prev.map((a) => (a.id === apptId ? { ...a, checkedIn: false, checkInAt: null } : a)));
     supabase.from("appointments").update({ checked_in: false, check_in_at: null }).eq("id", apptId).then(({ error }) => { if (error) console.error("Failed to remove from queue", error); });
   }
+  function assignDoctor(apptId, doctor) {
+    if (!doctor) return;
+    setAppointments((prev) => prev.map((a) => a.id === apptId ? { ...a, doctor } : a));
+    supabase.from("appointments").update({ doctor_name: doctor }).eq("id", apptId).then(({ error }) => { if (error) console.error("Failed to assign doctor", error); });
+  }
   function selectEntry(patient) {
-    const already = appointments.some((a) => a.patientId === patient.id && a.dateISO === todayISO() && a.status !== "cancelled" && a.entrySource !== "appointment-desk");
+    const already = appointments.some((a) => a.patientId === patient.id && a.dateISO === todayISO() && a.status !== "cancelled");
     const entry = already
-      ? appointments.find((a) => a.patientId === patient.id && a.dateISO === todayISO() && a.status !== "cancelled" && a.entrySource !== "appointment-desk")
+      ? appointments.find((a) => a.patientId === patient.id && a.dateISO === todayISO() && a.status !== "cancelled")
       : {
           id: nextApptId(), patientId: patient.id, patientName: patient.name, phone: patient.phone,
           doctor: "Not yet assigned", dateISO: todayISO(), hour: null, minute: null, status: "confirmed",
@@ -743,7 +774,7 @@ function ReceptionDashboardScreen({ onSelectPatient, allPatients, appointments, 
   // Live queue: checked in today, waiting to be seen (no consultation recorded yet
   // today) — same definition the Doctor Dashboard uses, so both sides agree on who's
   // actually still waiting.
-  const todayLabel = new Date().toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" });
+  const todayLabel = indiaDateLabel();
   const liveQueueList = (appointments || [])
     .filter((a) => a.checkedIn && a.dateISO === todayISO() && !(patientHistoryRecords?.[a.patientId] || []).some((h) => h.date === todayLabel))
     .map((a) => ({ ...a, name: a.name || a.patientName, isEmergency: a.entrySource === "emergency" }))
@@ -785,7 +816,13 @@ function ReceptionDashboardScreen({ onSelectPatient, allPatients, appointments, 
                   <div style={rdStyles.avatarSmall} onClick={() => onSelectPatient(a.patientId, a.name)}>{a.name.charAt(0)}</div>
                   <div style={rdStyles.patientMain} onClick={() => onSelectPatient(a.patientId, a.name)} role="button" tabIndex={0}>
                     <div style={rdStyles.patientName}>{a.name} <span style={rdStyles.patientId}>{a.patientId}</span>{a.isEmergency && <span style={rdStyles.emergencyNameTag}>EMERGENCY</span>}</div>
-                    <div style={rdStyles.patientMeta}>{a.phone} · {a.doctor}{a.entrySource ? "" : ` · ${a.appointmentType || "New Consultation"}`}</div>
+                    <div style={rdStyles.patientMeta}>{a.phone} · {a.doctor || "Not yet assigned"}{a.entrySource ? "" : ` · ${a.appointmentType || "New Consultation"}`}</div>
+                    {(a.doctor === "Not yet assigned" || !a.doctor) && doctorNames.length > 0 && (
+                      <select value="" onClick={(e) => e.stopPropagation()} onChange={(e) => { assignDoctor(a.id, e.target.value); e.target.value = ""; }} style={{ marginTop: 5, fontSize: 11, padding: "4px 6px", borderRadius: 5, border: "1px solid #D6DBD8", background: "#fff" }}>
+                        <option value="">Assign doctor…</option>
+                        {doctorNames.map((d) => <option key={d} value={d}>{d}</option>)}
+                      </select>
+                    )}
                   </div>
                   {seenToday ? (
                     <span style={rdStyles.seenTag}><CheckCircle2 size={12} style={{ marginRight: 4, verticalAlign: -2 }} />Seen</span>
@@ -967,7 +1004,7 @@ function generateDaySlots() {
   return slots; // exactly 48 slots
 }
 const DAY_SLOTS = generateDaySlots();
-function todayISO() { return new Date().toISOString().split("T")[0]; }
+function todayISO() { return indiaDateISO(); }
 
 /* ============================================================================
    SUPABASE DATA MAPPING — camelCase (app) <-> snake_case (DB) for every
@@ -996,7 +1033,7 @@ const appointmentToDb = (a) => ({
 const vitalsFromDb = (r) => ({
   dbId: r.id, weight: r.weight, height: r.height, headCirc: r.head_circ, pr: r.pr, rr: r.rr, temp: r.temp, spo2: r.spo2,
   dateLabel: r.date_label, dateISO: r.recorded_at,
-  recordedOn: new Date(r.recorded_at).toLocaleString("en-IN", { day: "2-digit", month: "short", year: "numeric", hour: "numeric", minute: "2-digit" }),
+  recordedOn: indiaDateTimeLabel(new Date(r.recorded_at)),
 });
 const vitalsToDb = (v, patientId, recordedBy) => ({
   patient_id: patientId, recorded_by: recordedBy || null, date_label: v.dateLabel,
@@ -1077,9 +1114,15 @@ function AppointmentBookingScreen({ allPatients, appointments, setAppointments, 
   const [refreshing, setRefreshing] = useState(false);
 
   const dayAppointments = appointments.filter((a) => a.dateISO === selectedDate);
-  const activeDayAppointments = dayAppointments.filter((a) => a.status !== "cancelled").sort((a, b) => (a.hour * 60 + a.minute) - (b.hour * 60 + b.minute));
+  const activeDayAppointments = Array.from(
+    dayAppointments.filter((a) => a.status !== "cancelled").reduce((map, a) => {
+      const existing = map.get(a.patientId);
+      if (!existing || (!!a.checkedIn && !existing.checkedIn) || ((a.checkInAt || 0) > (existing.checkInAt || 0))) map.set(a.patientId, a);
+      return map;
+    }, new Map()).values()
+  ).sort((a, b) => ((a.hour ?? 24) * 60 + (a.minute ?? 0)) - ((b.hour ?? 24) * 60 + (b.minute ?? 0)));
   const cancelledDayAppointments = dayAppointments.filter((a) => a.status === "cancelled");
-  const todayLabel = new Date().toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" });
+  const todayLabel = indiaDateLabel();
 
   function countForSlot(dateISO, hour, minute, excludeId) {
     return appointments.filter((a) => a.dateISO === dateISO && a.hour === hour && a.minute === minute && a.status !== "cancelled" && a.id !== excludeId).length;
@@ -1100,6 +1143,9 @@ function AppointmentBookingScreen({ allPatients, appointments, setAppointments, 
   }
 
   function handleBook({ patient, doctor, hour, minute, dateISO, appointmentType }) {
+    if (isPastIndiaSlot(dateISO, hour, minute)) { window.alert("Cannot book an appointment in a time that has already passed."); return; }
+    const existingSamePatient = appointments.find((a) => a.patientId === patient.id && a.dateISO === dateISO && a.status !== "cancelled");
+    if (existingSamePatient) { window.alert("This patient already has an active appointment for the selected date."); return; }
     const entry = { id: nextApptId(), patientId: patient.id, patientName: patient.name, phone: patient.phone, doctor, dateISO, hour, minute, status: "confirmed", appointmentType, entrySource: "appointment-desk", checkedIn: false, checkInAt: null };
     setAppointments((prev) => [...prev, entry]);
     setSelectedDate(dateISO);
@@ -1108,12 +1154,16 @@ function AppointmentBookingScreen({ allPatients, appointments, setAppointments, 
     supabase.from("appointments").insert(appointmentToDb(entry)).then(({ error }) => { if (error) console.error("Failed to save appointment", error); });
   }
   function handleReschedule(apptId, dateISO, hour, minute) {
+    if (isPastIndiaSlot(dateISO, hour, minute)) { window.alert("Cannot book or reschedule an appointment to a time that has already passed."); return; }
     setAppointments((prev) => prev.map((a) => (a.id === apptId ? { ...a, dateISO, hour, minute, status: "confirmed" } : a)));
     setSelectedDate(dateISO);
     setRescheduling(null);
     supabase.from("appointments").update({ date_iso: dateISO, hour, minute, status: "confirmed" }).eq("id", apptId).then(({ error }) => { if (error) console.error("Failed to reschedule appointment", error); });
   }
   function handleCancel(apptId, reason) {
+    const appt = appointments.find((a) => a.id === apptId);
+    const seenToday = appt && (patientHistoryRecords?.[appt.patientId] || []).some((h) => h.date === indiaDateLabel());
+    if (seenToday) { window.alert("This patient has already been seen and cannot be cancelled."); setCancelling(null); return; }
     setAppointments((prev) => prev.map((a) => (a.id === apptId ? { ...a, status: "cancelled", cancelReason: reason } : a)));
     setCancelling(null);
     supabase.from("appointments").update({ status: "cancelled", cancel_reason: reason }).eq("id", apptId).then(({ error }) => { if (error) console.error("Failed to cancel appointment", error); });
@@ -1139,8 +1189,9 @@ function AppointmentBookingScreen({ allPatients, appointments, setAppointments, 
         <div style={apptStyles.slotGrid}>
           {DAY_SLOTS.map((s) => {
             const count = countForSlot(selectedDate, s.hour, s.minute);
+            const isPast = isPastIndiaSlot(selectedDate, s.hour, s.minute);
             return (
-              <button key={s.key} type="button" style={{ ...apptStyles.slotChip, ...(count > 0 ? apptStyles.slotChipBooked : {}) }} onClick={() => { setPrefillSlot(s); setShowBookModal(true); }}>
+              <button key={s.key} type="button" disabled={isPast} style={{ ...apptStyles.slotChip, ...(count > 0 ? apptStyles.slotChipBooked : {}), ...(isPast ? { opacity: 0.35, cursor: "not-allowed" } : {}) }} onClick={() => { if (!isPast) { setPrefillSlot(s); setShowBookModal(true); } }}>
                 <span>{s.label}</span>
                 {count > 0 && <span style={apptStyles.slotCountBadge}>{count}</span>}
               </button>
@@ -1161,10 +1212,12 @@ function AppointmentBookingScreen({ allPatients, appointments, setAppointments, 
                   <div style={apptStyles.apptName}>{a.patientName} <span style={apptStyles.apptId}>{a.patientId}</span>{isReception && <span style={{ ...apptStyles.apptId, marginLeft: 6, color: a.entrySource === "emergency" ? "#9B2C2C" : "#8A928F" }}>· {a.entrySource === "emergency" ? "EMERGENCY (reception)" : "WALK-IN (reception)"}</span>}{seenToday && <span style={{ ...apptStyles.apptId, marginLeft: 6, color: "#1E6B45" }}>· SEEN</span>}</div>
                   <div style={apptStyles.apptMeta}>{isReception ? (a.checkedIn ? "Checked in" : "Not yet checked in") : formatSlotLabel(a.hour, a.minute)} · {a.doctor} · {a.appointmentType || "New Consultation"} · {a.phone}</div>
                 </div>
-                <div style={apptStyles.apptActions}>
-                  {!isReception && <button style={apptStyles.rescheduleBtn} onClick={() => setRescheduling(a)}>Reschedule</button>}
-                  <button style={apptStyles.cancelBtnSmall} onClick={() => setCancelling(a)}>Cancel</button>
-                </div>
+                {!seenToday && (
+                  <div style={apptStyles.apptActions}>
+                    {!isReception && <button style={apptStyles.rescheduleBtn} onClick={() => setRescheduling(a)}>Reschedule</button>}
+                    <button style={apptStyles.cancelBtnSmall} onClick={() => setCancelling(a)}>Cancel</button>
+                  </div>
+                )}
               </div>
             );
           })}
@@ -1267,8 +1320,9 @@ function BookAppointmentModal({ allPatients, initialDate, initialSlot, countForS
           {DAY_SLOTS.map((s) => {
             const count = countForSlot(date, s.hour, s.minute);
             const isSelected = slot.hour === s.hour && slot.minute === s.minute;
+            const isPast = isPastIndiaSlot(date, s.hour, s.minute);
             return (
-              <button key={s.key} type="button" onClick={() => setSlot(s)} style={{ ...apptStyles.modalSlotChip, ...(isSelected ? apptStyles.modalSlotChipActive : {}) }}>
+              <button key={s.key} type="button" disabled={isPast} onClick={() => !isPast && setSlot(s)} style={{ ...apptStyles.modalSlotChip, ...(isSelected ? apptStyles.modalSlotChipActive : {}), ...(isPast ? { opacity: 0.35, cursor: "not-allowed" } : {}) }}>
                 {s.label}{count > 0 && <span style={{ ...apptStyles.modalSlotCount, ...(isSelected ? apptStyles.modalSlotCountActive : {}) }}>{count}</span>}
               </button>
             );
@@ -1306,8 +1360,9 @@ function RescheduleApptModal({ appt, countForSlot, onCancel, onConfirm }) {
           {DAY_SLOTS.map((s) => {
             const count = countForSlot(date, s.hour, s.minute, appt.id);
             const isSelected = slot.hour === s.hour && slot.minute === s.minute;
+            const isPast = isPastIndiaSlot(date, s.hour, s.minute);
             return (
-              <button key={s.key} type="button" onClick={() => setSlot(s)} style={{ ...apptStyles.modalSlotChip, ...(isSelected ? apptStyles.modalSlotChipActive : {}) }}>
+              <button key={s.key} type="button" disabled={isPast} onClick={() => !isPast && setSlot(s)} style={{ ...apptStyles.modalSlotChip, ...(isSelected ? apptStyles.modalSlotChipActive : {}), ...(isPast ? { opacity: 0.35, cursor: "not-allowed" } : {}) }}>
                 {s.label}{count > 0 && <span style={{ ...apptStyles.modalSlotCount, ...(isSelected ? apptStyles.modalSlotCountActive : {}) }}>{count}</span>}
               </button>
             );
@@ -1731,14 +1786,14 @@ function IPDRoomDashboardScreen({ allPatients, rooms, setRooms, isAdmin, setPati
   const occupiedCount = rooms.filter((r) => r.status === "occupied").length;
 
   function completeAdmission(roomNumber, { patient, doctor, fileNumber }) {
-    const admitDate = new Date().toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" });
+    const admitDate = indiaDateLabel();
     setRooms((prev) => prev.map((r) => (r.number === roomNumber ? { ...r, status: "occupied", patient: patient.name, patientId: patient.id, doctor, fileNumber, admitDate } : r)));
     setAdmittingTo(null);
     supabase.from("rooms").update({ status: "occupied", patient_name: patient.name, patient_id: patient.id, doctor, file_number: fileNumber || null, admit_date: admitDate }).eq("number", roomNumber).then(({ error }) => { if (error) console.error("Failed to save admission", error); });
   }
   function dischargeRoom(roomNumber, summary) {
     const room = rooms.find((r) => r.number === roomNumber);
-    const dischargeDate = new Date().toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" });
+    const dischargeDate = indiaDateLabel();
     if (room && room.patientId && setPatientHistoryRecords) {
       const entry = {
         type: "IPD",
@@ -2055,7 +2110,7 @@ function PatientProfileScreen({ patient, onClose, session, printSettings, vaccin
     const now = new Date();
     const recordedOnStr = now.toLocaleString("en-IN", { day: "2-digit", month: "short", year: "numeric", hour: "numeric", minute: "2-digit" });
     const dateLabel = now.toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" });
-    const newEntry = { ...vitalsDraft, recordedOn: recordedOnStr, dateLabel, dateISO: now.toISOString() };
+    const newEntry = { ...vitalsDraft, recordedOn: recordedOnStr, dateLabel, dateISO: indiaDateISO(now) };
     const existingToday = vitalsHistory.find((row) => row.dateLabel === dateLabel);
     setVitalsHistory((prev) => {
       const existingTodayIndex = prev.findIndex((row) => row.dateLabel === dateLabel);
@@ -2096,7 +2151,7 @@ function PatientProfileScreen({ patient, onClose, session, printSettings, vaccin
   // Printing a handwritten sheet is also a completed consultation — it should move the
   // patient from "Live queue" to "Checked out" on the Doctor Dashboard, same as a typed one.
   function recordHandwrittenCheckout() {
-    const todayLabel = new Date().toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" });
+    const todayLabel = indiaDateLabel();
     if (history.some((h) => h.date === todayLabel)) return; // already checked out today, don't duplicate
     const entry = { type: "OPD", date: todayLabel, doctor: session.name, diagnosis: "Handwritten prescription", hasPrescription: false, bookedDoctor: session.name, consultingDoctor: session.name };
     setHistory((prev) => [entry, ...prev]);
@@ -2379,7 +2434,7 @@ function NewConsultationForm({ patient, session, onCancel, onSave, copyFrom, doc
 
   function handleSave() {
     const record = {
-      date: new Date().toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" }),
+      date: indiaDateLabel(),
       createdAt: new Date().toISOString(),
       bookedDoctor, consultingDoctor: session.name, consultingDoctorId: session.username,
       complaints: complaints.map((c) => c.manualDuration ? `${c.name} (${c.manualDuration})` : c.durationValue ? `${c.name} (${c.durationValue} ${c.durationUnit})` : c.name).join(", "),
@@ -2734,7 +2789,7 @@ function HandwrittenPrescriptionView({ patient, doctorName, onBack, printSetting
   const ps = { ...defaultPrintSettings, ...(printSettings || {}) };
   const clinic = clinicDetails || { name: "Niramaya Clinic", address: "", phone: "" };
   function handlePrint() { if (onPrinted) onPrinted(); window.print(); }
-  const today = new Date().toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" });
+  const today = indiaDateLabel();
   const latestVitals = (vitalsHistory && vitalsHistory[0]) || null;
   return (
     <div style={ppStyles.page} className="rx-page-wrap">
