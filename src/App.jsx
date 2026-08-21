@@ -1115,8 +1115,10 @@ function groupByPatient(rows, mapFn, sortKey) {
 
 function formatDateLabel(dateISO) { return new Date(dateISO + "T00:00:00").toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" }); }
 
-let apptUid = 1000;
-function nextApptId() { return `A-${apptUid++}`; }
+function nextApptId() {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") return `A-${crypto.randomUUID()}`;
+  return `A-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+}
 
 const seedScheduledAppointments = [];
 
@@ -1157,7 +1159,7 @@ function AppointmentBookingScreen({ allPatients, appointments, setAppointments, 
     setRefreshing(false);
   }
 
-  function handleBook({ patient, doctor, hour, minute, dateISO, appointmentType }) {
+  async function handleBook({ patient, doctor, hour, minute, dateISO, appointmentType }) {
     if (isPastIndiaSlot(dateISO, hour, minute)) { window.alert("Cannot book an appointment in a time that has already passed."); return; }
     const existingSamePatient = appointments.find((a) => a.patientId === patient.id && a.dateISO === dateISO && a.status !== "cancelled");
     if (existingSamePatient) { window.alert("This patient already has an active appointment for the selected date."); return; }
@@ -1166,7 +1168,18 @@ function AppointmentBookingScreen({ allPatients, appointments, setAppointments, 
     setSelectedDate(dateISO);
     setShowBookModal(false);
     setPrefillSlot(null);
-    supabase.from("appointments").insert(appointmentToDb(entry)).then(({ error }) => { if (error) console.error("Failed to save appointment", error); });
+
+    const { data, error } = await supabase.from("appointments").insert(appointmentToDb(entry)).select().single();
+    if (error) {
+      console.error("Failed to save appointment", error);
+      setAppointments((prev) => prev.filter((a) => a.id !== entry.id));
+      window.alert(`Appointment could not be saved: ${error.message}`);
+      return;
+    }
+    if (data) {
+      const saved = appointmentFromDb(data);
+      setAppointments((prev) => prev.map((a) => a.id === entry.id ? saved : a));
+    }
   }
   function handleReschedule(apptId, dateISO, hour, minute) {
     if (isPastIndiaSlot(dateISO, hour, minute)) { window.alert("Cannot book or reschedule an appointment to a time that has already passed."); return; }
