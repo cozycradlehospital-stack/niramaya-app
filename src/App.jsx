@@ -2961,6 +2961,7 @@ const ppStyles = {
   followUpBtn: { display: "flex", alignItems: "center", justifyContent: "center", background: "#E7F0FA", color: "#1D5A96", border: "1px solid #B8D4EF", borderRadius: 8, padding: "11px 14px", fontSize: 13, fontWeight: 600, cursor: "pointer", whiteSpace: "nowrap" },
   followUpInlineBtn: { fontSize: 11, fontWeight: 600, color: "#1D5A96", background: "#E7F0FA", border: "1px solid #B8D4EF", borderRadius: 7, padding: "6px 10px", cursor: "pointer", whiteSpace: "nowrap" },
   growthPlaceholder: { border: "1px dashed #B0B5B1", borderRadius: 8, padding: "20px 12px", textAlign: "center", fontSize: 11.5, color: "#8A928F", fontStyle: "italic" },
+  growthBox: { width: "1in", height: "1in", border: "1px dashed #DCD9D0", borderRadius: 6, boxSizing: "border-box" },
   rxListRow: { display: "flex", alignItems: "center", gap: 10, background: "#F6F5F1", border: "1px solid #EEECE5", borderRadius: 10, padding: "11px 12px", cursor: "pointer" },
   backBtnPlain: { background: "none", border: "none", fontSize: 13, fontWeight: 600, color: "#0B3B36", cursor: "pointer", padding: 0, marginBottom: 12, display: "block" },
   rxViewerHeader: { display: "flex", justifyContent: "space-between", alignItems: "center", padding: "20px 20px 0" },
@@ -3034,44 +3035,46 @@ function GrowthChartMetric({ patient, vitalsHistory, metric }) {
   const isUnder5 = ageMonths <= 60;
   const refTable = isHeadCirc ? growthRefHeadCirc : (isWeight ? (isUnder5 ? growthRefWeight : growthRefWeight5to18) : (isUnder5 ? growthRefHeight : growthRefHeight5to18));
   const unit = isWeight ? "kg" : "cm";
-  const label = isHeadCirc ? "Head circumference-for-age" : (isWeight ? "Weight-for-age" : "Height-for-age");
+  const shortLabel = isHeadCirc ? "HC/Age" : (isWeight ? "Wt/Age" : "Ht/Age");
+  const fullLabel = isHeadCirc ? "Head circumference-for-age" : (isWeight ? "Weight-for-age" : "Height-for-age");
   const rawHistory = (vitalsHistory && vitalsHistory.length > 0) ? vitalsHistory : (patient.vitals ? [patient.vitals] : []);
   const points = rawHistory.map(row => ({ age: ageInMonths(patient.dob, row.dateISO || undefined), value: parseFloat(row[metric]?.value) }))
     .filter(p => !isNaN(p.value) && p.age >= (isHeadCirc || isUnder5 ? 0 : 60) && p.age <= (isHeadCirc ? 60 : 216)).sort((a,b) => a.age-b.age);
   const maxAge = isHeadCirc ? 60 : 216;
-  if (ageMonths > maxAge || points.length === 0) return <div style={ppStyles.growthPlaceholder}>{label}: tracked for {isHeadCirc ? "children up to 5 years" : "children 0–18 years"} — not applicable, or no {isHeadCirc ? "head circumference" : isWeight ? "weight" : "height"} recorded yet.</div>;
+  if (ageMonths > maxAge || points.length === 0) {
+    return <div style={{ ...ppStyles.growthBox, display: "flex", alignItems: "center", justifyContent: "center", textAlign: "center", padding: 4 }}>
+      <div style={{ fontSize: 7.5, color: "#B0B5B1" }}>{shortLabel}<br />no data</div>
+    </div>;
+  }
   const ref = refTable[sexKey];
-  // Square, small canvas — several of these stack in one column without ballooning
-  // the printed page (previously wide 460x190 charts were the main cause of prints
-  // overflowing onto an extra, mostly-blank page).
-  const W = 200, H = 200, padL = 30, padR = 8, padT = 10, padB = 18;
+  // Small square canvas, several sit side by side in one row — this is the main
+  // fix for prints spilling onto a near-blank second page.
+  const W = 130, H = 130, padL = 20, padR = 5, padT = 6, padB = 12;
   const maxVal = Math.max(...ref.map(r => r.p97), ...points.map(p => p.value)) + 2;
   const x = age => padL + (Math.min(age, maxAge) / maxAge) * (W - padL - padR);
   const y = v => H - padB - (Math.min(v, maxVal) / maxVal) * (H - padT - padB);
   const pathFor = key => ref.map((r,i) => `${i === 0 ? "M" : "L"} ${x(r.age).toFixed(1)} ${y(r[key]).toFixed(1)}`).join(" ");
   const patientPath = points.map((p,i) => `${i === 0 ? "M" : "L"} ${x(p.age).toFixed(1)} ${y(p.value).toFixed(1)}`).join(" ");
   const last = points[points.length-1], lastX = x(last.age), lastY = y(last.value);
-  return <div style={{ maxWidth: 210 }}>
-    <div style={{ fontSize: 10.5, fontWeight: 700, color: "#0B3B36", marginBottom: 4 }}>{label}</div>
-    <svg width={210} height={210} viewBox={`0 0 ${W} ${H}`} style={{ background: "#FBFAF8", border: "1px solid #EEECE5", borderRadius: 8, display: "block" }}>
-      <line x1={padL} y1={H-padB} x2={W-padR} y2={H-padB} stroke="#DCD9D0" strokeWidth="1" />
-      <line x1={padL} y1={padT} x2={padL} y2={H-padB} stroke="#DCD9D0" strokeWidth="1" />
-      <text x={padL} y={H-6} fontSize="7" fill="#8A928F">{isHeadCirc ? "0m" : "5y"}</text>
-      <text x={W-padR-16} y={H-6} fontSize="7" fill="#8A928F">{isHeadCirc ? "5y" : "18y"}</text>
-      <text x={1} y={padT+5} fontSize="7" fill="#8A928F">{maxVal.toFixed(0)}{unit}</text>
-      <path d={pathFor("p97")} fill="none" stroke="#F0C9A0" strokeWidth="1" strokeDasharray="3 2" />
-      <path d={pathFor("p50")} fill="none" stroke="#B0B5B1" strokeWidth="1" strokeDasharray="3 2" />
-      <path d={pathFor("p3")} fill="none" stroke="#F0C9A0" strokeWidth="1" strokeDasharray="3 2" />
-      <path d={patientPath} fill="none" stroke="#0B3B36" strokeWidth="1.6" />
-      {points.map((p,i) => <circle key={i} cx={x(p.age)} cy={y(p.value)} r="2.5" fill="#0B3B36" />)}
-      <text x={Math.min(lastX+5,W-34)} y={lastY-5} fontSize="8" fill="#0B3B36" fontWeight="700">{last.value}{unit}</text>
+  return <div style={{ width: "1in" }}>
+    <div style={{ fontSize: 8, fontWeight: 700, color: "#0B3B36", marginBottom: 2, textAlign: "center" }}>{shortLabel}</div>
+    <svg width="1in" height="1in" viewBox={`0 0 ${W} ${H}`} style={{ background: "#FBFAF8", border: "1px solid #EEECE5", borderRadius: 6, display: "block" }}>
+      <line x1={padL} y1={H-padB} x2={W-padR} y2={H-padB} stroke="#DCD9D0" strokeWidth="0.75" />
+      <line x1={padL} y1={padT} x2={padL} y2={H-padB} stroke="#DCD9D0" strokeWidth="0.75" />
+      <text x={1} y={padT+4} fontSize="5.5" fill="#8A928F">{maxVal.toFixed(0)}{unit}</text>
+      <path d={pathFor("p97")} fill="none" stroke="#F0C9A0" strokeWidth="0.75" strokeDasharray="2 1.5" />
+      <path d={pathFor("p50")} fill="none" stroke="#B0B5B1" strokeWidth="0.75" strokeDasharray="2 1.5" />
+      <path d={pathFor("p3")} fill="none" stroke="#F0C9A0" strokeWidth="0.75" strokeDasharray="2 1.5" />
+      <path d={patientPath} fill="none" stroke="#0B3B36" strokeWidth="1.3" />
+      {points.map((p,i) => <circle key={i} cx={x(p.age)} cy={y(p.value)} r="1.8" fill="#0B3B36" />)}
     </svg>
+    <div style={{ fontSize: 7, color: "#5B635F", textAlign: "center", marginTop: 1 }}>{last.value}{unit}</div>
   </div>;
 }
 function GrowthChartSVG({ patient, vitalsHistory }) {
   const ageMonths = ageInMonths(patient.dob);
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+    <div style={{ display: "flex", flexDirection: "row", flexWrap: "wrap", gap: 10 }}>
       {ageMonths <= 60 ? <>
         <GrowthChartMetric patient={patient} vitalsHistory={vitalsHistory} metric="weight" />
         <GrowthChartMetric patient={patient} vitalsHistory={vitalsHistory} metric="height" />
