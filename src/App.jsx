@@ -2682,7 +2682,11 @@ function PrescriptionViewer({ entry, patient, onBack, printSettings, vaxList, vi
             {ps.includeInvestigations && <RxSection label="Investigations" value={rx.investigations} />}
             {ps.includeInstructions && <RxSection label="Instructions" value={rx.instructions} />}
             {ps.includeVaccination && (() => {
-              const givenToday = (vaxList || []).filter((v) => v.given && isSameDay(v.given, new Date(entry.createdAt || Date.now())));
+              // Compare by the visit's own recorded date label (always present on every
+              // entry) rather than a timestamp — this is what actually identifies "this
+              // visit," and works correctly whether you're viewing today's prescription
+              // or an old one from the patient's history.
+              const givenToday = (vaxList || []).filter((v) => v.given && fmtDate(v.given) === entry.date);
               const nextDue = (vaxList || [])
                 .filter((v) => !v.given && v.due && getVStatus(v) === "blue")
                 .sort((a, b) => new Date(a.due) - new Date(b.due))
@@ -2693,7 +2697,7 @@ function PrescriptionViewer({ entry, patient, onBack, printSettings, vaxList, vi
                   <div style={ppStyles.rxSectionLabel}>Vaccination</div>
                   {givenToday.length > 0 && (
                     <div style={{ fontSize: 13, color: "#1B2320", marginBottom: 4 }}>
-                      <b>Given today:</b> {givenToday.map((v, i) => `${v.name}${v.dose ? ` (${v.dose})` : ""}${v.brand ? ` — ${v.brand}` : ""}`).join(", ")}
+                      <b>Given at this visit:</b> {givenToday.map((v, i) => `${v.name}${v.dose ? ` (${v.dose})` : ""}${v.brand ? ` — ${v.brand}` : ""}`).join(", ")}
                     </div>
                   )}
                   {nextDue.length > 0 && (
