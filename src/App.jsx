@@ -8,7 +8,7 @@ import {
   Thermometer, Droplet, AlertTriangle, User, Activity, History as HistoryIcon,
   Calendar, Printer, UserPlus2, Plus,
   Building2, MapPin, Mail, Globe, Pencil, Check, FlaskConical, Pill,
-  MessageSquareText, AlertCircle, Settings2
+  MessageSquareText, AlertCircle, Settings2, RefreshCw
 } from "lucide-react";
 
 /* ============================================================================
@@ -403,12 +403,12 @@ function Shell({ session, onLogout, accounts, setAccounts, refreshAccounts, room
           />
         ) : activeTab === "dashboard" ? (
           session.role === "receptionist"
-            ? <ReceptionDashboardScreen onSelectPatient={openPatient} allPatients={allPatients} appointments={appointments} setAppointments={setAppointments} vaccinationRecords={vaccinationRecords} setVitalsRecords={setVitalsRecords} rooms={rooms} session={session} patientHistoryRecords={patientHistoryRecords} />
-            : <DoctorDashboardScreen onSelectPatient={openPatient} allPatients={allPatients} session={session} vaccinationRecords={vaccinationRecords} rooms={rooms} appointments={appointments} setAppointments={setAppointments} patientHistoryRecords={patientHistoryRecords} />
+            ? <ReceptionDashboardScreen onSelectPatient={openPatient} allPatients={allPatients} appointments={appointments} setAppointments={setAppointments} vaccinationRecords={vaccinationRecords} setVitalsRecords={setVitalsRecords} rooms={rooms} session={session} patientHistoryRecords={patientHistoryRecords} setPatientHistoryRecords={setPatientHistoryRecords} />
+            : <DoctorDashboardScreen onSelectPatient={openPatient} allPatients={allPatients} session={session} vaccinationRecords={vaccinationRecords} rooms={rooms} appointments={appointments} setAppointments={setAppointments} patientHistoryRecords={patientHistoryRecords} setPatientHistoryRecords={setPatientHistoryRecords} />
         ) : activeTab === "patients" ? (
           <PatientsTab onSelectPatient={openPatient} patients={allPatients} onAddPatient={addPatient} />
         ) : activeTab === "appointments" ? (
-          <AppointmentBookingScreen allPatients={allPatients} appointments={appointments} setAppointments={setAppointments} doctorNames={doctorNames} appointmentTypes={appointmentTypes} />
+          <AppointmentBookingScreen allPatients={allPatients} appointments={appointments} setAppointments={setAppointments} doctorNames={doctorNames} appointmentTypes={appointmentTypes} patientHistoryRecords={patientHistoryRecords} setPatientHistoryRecords={setPatientHistoryRecords} />
         ) : activeTab === "ipd" ? (
           <IPDRoomDashboardScreen allPatients={allPatients} rooms={rooms} setRooms={setRooms} isAdmin={session.role === "admin"} setPatientHistoryRecords={setPatientHistoryRecords} doctorNames={doctorNames} />
         ) : activeTab === "settings" && session.role === "admin" ? (
@@ -449,10 +449,22 @@ function ComingSoon({ tabKey, navItems }) {
 
 const searchTabs = [{ key: "name", label: "Name" }, { key: "phone", label: "Phone" }, { key: "id", label: "ID" }, { key: "dob", label: "DOB" }];
 
-function DoctorDashboardScreen({ onSelectPatient, allPatients, session, vaccinationRecords, rooms, appointments, setAppointments, patientHistoryRecords }) {
+function DoctorDashboardScreen({ onSelectPatient, allPatients, session, vaccinationRecords, rooms, appointments, setAppointments, patientHistoryRecords, setPatientHistoryRecords }) {
   const [searchTab, setSearchTab] = useState("name");
   const [query, setQuery] = useState("");
   const [rowTab, setRowTab] = useState("live");
+  const [refreshing, setRefreshing] = useState(false);
+
+  async function handleRefresh() {
+    setRefreshing(true);
+    const [apptsRes, consultRes] = await Promise.all([
+      supabase.from("appointments").select("*"),
+      supabase.from("consultations").select("*"),
+    ]);
+    if (apptsRes.data) setAppointments(apptsRes.data.map(appointmentFromDb));
+    if (consultRes.data && setPatientHistoryRecords) setPatientHistoryRecords(groupByPatient(consultRes.data, consultationFromDb, null));
+    setRefreshing(false);
+  }
 
   function matches(p) {
     if (!query.trim()) return true;
@@ -505,8 +517,10 @@ function DoctorDashboardScreen({ onSelectPatient, allPatients, session, vaccinat
   return (
     <div style={ddStyles.page}>
       <div style={ddStyles.container}>
-        <div style={ddStyles.eyebrow}>DOCTOR · {session.name}</div>
-        <h1 style={ddStyles.h1}>Today's patients</h1>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 10 }}>
+          <div><div style={ddStyles.eyebrow}>DOCTOR · {session.name}</div><h1 style={ddStyles.h1}>Today's patients</h1></div>
+          <button style={rdStyles.refreshBtn} onClick={handleRefresh} disabled={refreshing} title="Refresh"><RefreshCw size={14} style={{ opacity: refreshing ? 0.4 : 1 }} /></button>
+        </div>
 
         <div style={ddStyles.searchBlock}>
           <div style={ddStyles.searchInputWrap}>
@@ -612,12 +626,27 @@ const ddStyles = {
    ========================================================================== */
 function todayAt(hour, minute) { const d = new Date(); d.setHours(hour, minute, 0, 0); return d; }
 
-function ReceptionDashboardScreen({ onSelectPatient, allPatients, appointments, setAppointments, vaccinationRecords, setVitalsRecords, rooms, session, patientHistoryRecords }) {
+function ReceptionDashboardScreen({ onSelectPatient, allPatients, appointments, setAppointments, vaccinationRecords, setVitalsRecords, rooms, session, patientHistoryRecords, setPatientHistoryRecords }) {
   const [checkInFor, setCheckInFor] = useState(null);
   const [entryPickerType, setEntryPickerType] = useState(null);
   const [selectedDate, setSelectedDate] = useState(todayISO());
   const [viewTab, setViewTab] = useState("appointments");
+  const [refreshing, setRefreshing] = useState(false);
   const isToday = selectedDate === todayISO();
+
+  // Appointments update from other logins too (a booking made at the Appointment Desk,
+  // a doctor finishing a consultation) — this pulls the latest appointments + today's
+  // consultations so this screen reflects that without needing a full page reload.
+  async function handleRefresh() {
+    setRefreshing(true);
+    const [apptsRes, consultRes] = await Promise.all([
+      supabase.from("appointments").select("*"),
+      supabase.from("consultations").select("*"),
+    ]);
+    if (apptsRes.data) setAppointments(apptsRes.data.map(appointmentFromDb));
+    if (consultRes.data && setPatientHistoryRecords) setPatientHistoryRecords(groupByPatient(consultRes.data, consultationFromDb, null));
+    setRefreshing(false);
+  }
 
   function shiftDate(days) {
     const d = new Date(selectedDate);
@@ -730,6 +759,7 @@ function ReceptionDashboardScreen({ onSelectPatient, allPatients, appointments, 
         <div style={rdStyles.headerRow}>
           <div><div style={rdStyles.eyebrow}>RECEPTION · DASHBOARD</div><h1 style={rdStyles.h1}>{viewTab === "livequeue" ? "Live queue" : isToday ? "Today's appointments" : `Appointments — ${fmtDate(selectedDate)}`}</h1></div>
           <div style={rdStyles.headerBtnRow}>
+            <button style={rdStyles.refreshBtn} onClick={handleRefresh} disabled={refreshing} title="Refresh"><RefreshCw size={14} style={{ opacity: refreshing ? 0.4 : 1 }} /></button>
             <button style={rdStyles.addWalkInBtn} onClick={() => setEntryPickerType("walk-in")}><UserPlus size={15} />Add walk-in</button>
             <button style={rdStyles.addEmergencyBtn} onClick={() => setEntryPickerType("emergency")}><AlertTriangle size={15} />Add emergency</button>
           </div>
@@ -748,14 +778,18 @@ function ReceptionDashboardScreen({ onSelectPatient, allPatients, appointments, 
             </div>
             <div style={rdStyles.rowList}>
               {sorted.length === 0 && <div style={rdStyles.emptyNote}>No appointments for this date.</div>}
-              {sorted.map((a) => (
+              {sorted.map((a) => {
+                const seenToday = isToday && (patientHistoryRecords?.[a.patientId] || []).some((h) => h.date === todayLabel);
+                return (
                 <div key={a.id} style={{ ...rdStyles.patientRow, ...(a.isEmergency && !a.checkedIn ? rdStyles.patientRowEmergency : {}) }}>
                   <div style={rdStyles.avatarSmall} onClick={() => onSelectPatient(a.patientId, a.name)}>{a.name.charAt(0)}</div>
                   <div style={rdStyles.patientMain} onClick={() => onSelectPatient(a.patientId, a.name)} role="button" tabIndex={0}>
                     <div style={rdStyles.patientName}>{a.name} <span style={rdStyles.patientId}>{a.patientId}</span>{a.isEmergency && <span style={rdStyles.emergencyNameTag}>EMERGENCY</span>}</div>
                     <div style={rdStyles.patientMeta}>{a.phone} · {a.doctor}{a.entrySource ? "" : ` · ${a.appointmentType || "New Consultation"}`}</div>
                   </div>
-                  {a.checkedIn ? (
+                  {seenToday ? (
+                    <span style={rdStyles.seenTag}><CheckCircle2 size={12} style={{ marginRight: 4, verticalAlign: -2 }} />Seen</span>
+                  ) : a.checkedIn ? (
                     <span style={rdStyles.waitingTag}><CheckCircle2 size={12} style={{ marginRight: 4, verticalAlign: -2 }} />{waitingLabel(a.checkInAt)}</span>
                   ) : a.slotTime ? (
                     <><span style={{ ...rdStyles.slotTag, ...(isLate(a.slotTime) ? rdStyles.slotTagLate : {}) }}><Clock size={12} style={{ marginRight: 4, verticalAlign: -2 }} />{formatSlotTime(a.slotTime)}{isLate(a.slotTime) && " (Late)"}</span>
@@ -765,7 +799,8 @@ function ReceptionDashboardScreen({ onSelectPatient, allPatients, appointments, 
                     {isToday && <button style={rdStyles.checkInBtn} onClick={() => setCheckInFor(a)}>Check in</button>}</>
                   )}
                 </div>
-              ))}
+                );
+              })}
             </div>
           </>
         ) : (
@@ -895,6 +930,8 @@ const rdStyles = {
   slotTag: { fontSize: 11.5, fontWeight: 700, color: "#5B635F", background: "#F1F1EF", padding: "4px 9px", borderRadius: 20 },
   slotTagLate: { color: "#9B2C2C", background: "#FDECEC" },
   waitingTag: { fontSize: 11.5, fontWeight: 700, color: "#1E6B45", background: "#EAF5EF", padding: "4px 9px", borderRadius: 20 },
+  seenTag: { fontSize: 11.5, fontWeight: 700, color: "#5B635F", background: "#F1F1EF", padding: "4px 9px", borderRadius: 20 },
+  refreshBtn: { display: "flex", alignItems: "center", justifyContent: "center", width: 34, height: 34, borderRadius: 8, border: "1px solid #DCD9D0", background: "#fff", color: "#0B3B36", cursor: "pointer" },
   checkInBtn: { background: "#0B3B36", color: "#fff", border: "none", borderRadius: 8, padding: "8px 14px", fontSize: 12.5, fontWeight: 600, cursor: "pointer" },
   modalOverlay: { position: "fixed", inset: 0, background: "rgba(20,24,22,0.35)", display: "flex", alignItems: "center", justifyContent: "center", padding: 20, zIndex: 50 },
   modalCard: { background: "#fff", borderRadius: 14, padding: 22, width: "100%", maxWidth: 460, boxSizing: "border-box", maxHeight: "85vh", overflowY: "auto" },
@@ -1031,19 +1068,35 @@ function nextApptId() { return `A-${apptUid++}`; }
 
 const seedScheduledAppointments = [];
 
-function AppointmentBookingScreen({ allPatients, appointments, setAppointments, doctorNames, appointmentTypes }) {
+function AppointmentBookingScreen({ allPatients, appointments, setAppointments, doctorNames, appointmentTypes, patientHistoryRecords, setPatientHistoryRecords }) {
   const [selectedDate, setSelectedDate] = useState(todayISO());
   const [showBookModal, setShowBookModal] = useState(false);
   const [prefillSlot, setPrefillSlot] = useState(null);
   const [rescheduling, setRescheduling] = useState(null);
   const [cancelling, setCancelling] = useState(null);
+  const [refreshing, setRefreshing] = useState(false);
 
   const dayAppointments = appointments.filter((a) => a.dateISO === selectedDate);
   const activeDayAppointments = dayAppointments.filter((a) => a.status !== "cancelled").sort((a, b) => (a.hour * 60 + a.minute) - (b.hour * 60 + b.minute));
   const cancelledDayAppointments = dayAppointments.filter((a) => a.status === "cancelled");
+  const todayLabel = new Date().toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" });
 
   function countForSlot(dateISO, hour, minute, excludeId) {
     return appointments.filter((a) => a.dateISO === dateISO && a.hour === hour && a.minute === minute && a.status !== "cancelled" && a.id !== excludeId).length;
+  }
+
+  // Bookings, reschedules, and cancellations can come from Reception or another
+  // Appointment Desk session too — refresh pulls the latest state (and today's
+  // consultations, so "Seen" status stays accurate) without a full page reload.
+  async function handleRefresh() {
+    setRefreshing(true);
+    const [apptsRes, consultRes] = await Promise.all([
+      supabase.from("appointments").select("*"),
+      supabase.from("consultations").select("*"),
+    ]);
+    if (apptsRes.data) setAppointments(apptsRes.data.map(appointmentFromDb));
+    if (consultRes.data && setPatientHistoryRecords) setPatientHistoryRecords(groupByPatient(consultRes.data, consultationFromDb, null));
+    setRefreshing(false);
   }
 
   function handleBook({ patient, doctor, hour, minute, dateISO, appointmentType }) {
@@ -1071,7 +1124,10 @@ function AppointmentBookingScreen({ allPatients, appointments, setAppointments, 
       <div style={apptStyles.container}>
         <div style={apptStyles.headerRow}>
           <div><div style={apptStyles.eyebrow}>APPOINTMENT DESK</div><h1 style={apptStyles.h1}>Appointments</h1></div>
-          <button style={apptStyles.bookBtn} onClick={() => { setPrefillSlot(null); setShowBookModal(true); }}><Plus size={16} />Book appointment</button>
+          <div style={{ display: "flex", gap: 8 }}>
+            <button style={rdStyles.refreshBtn} onClick={handleRefresh} disabled={refreshing} title="Refresh"><RefreshCw size={14} style={{ opacity: refreshing ? 0.4 : 1 }} /></button>
+            <button style={apptStyles.bookBtn} onClick={() => { setPrefillSlot(null); setShowBookModal(true); }}><Plus size={16} />Book appointment</button>
+          </div>
         </div>
 
         <label style={apptStyles.dateLabel}>
@@ -1097,11 +1153,12 @@ function AppointmentBookingScreen({ allPatients, appointments, setAppointments, 
           {activeDayAppointments.length === 0 && <div style={apptStyles.emptyNote}>No appointments booked for this date yet.</div>}
           {activeDayAppointments.map((a) => {
             const isReception = a.hour == null; // walk-in / emergency added from Reception, no fixed slot
+            const seenToday = selectedDate === todayISO() && (patientHistoryRecords?.[a.patientId] || []).some((h) => h.date === todayLabel);
             return (
               <div key={a.id} style={apptStyles.apptRow}>
                 <div style={apptStyles.avatarSmall}>{a.patientName.charAt(0)}</div>
                 <div style={apptStyles.apptMain}>
-                  <div style={apptStyles.apptName}>{a.patientName} <span style={apptStyles.apptId}>{a.patientId}</span>{isReception && <span style={{ ...apptStyles.apptId, marginLeft: 6, color: a.entrySource === "emergency" ? "#9B2C2C" : "#8A928F" }}>· {a.entrySource === "emergency" ? "EMERGENCY (reception)" : "WALK-IN (reception)"}</span>}</div>
+                  <div style={apptStyles.apptName}>{a.patientName} <span style={apptStyles.apptId}>{a.patientId}</span>{isReception && <span style={{ ...apptStyles.apptId, marginLeft: 6, color: a.entrySource === "emergency" ? "#9B2C2C" : "#8A928F" }}>· {a.entrySource === "emergency" ? "EMERGENCY (reception)" : "WALK-IN (reception)"}</span>}{seenToday && <span style={{ ...apptStyles.apptId, marginLeft: 6, color: "#1E6B45" }}>· SEEN</span>}</div>
                   <div style={apptStyles.apptMeta}>{isReception ? (a.checkedIn ? "Checked in" : "Not yet checked in") : formatSlotLabel(a.hour, a.minute)} · {a.doctor} · {a.appointmentType || "New Consultation"} · {a.phone}</div>
                 </div>
                 <div style={apptStyles.apptActions}>
@@ -2523,7 +2580,7 @@ function PrescriptionViewer({ entry, patient, onBack, printSettings, vaxList, vi
 
   return (
     <div style={ppStyles.page} className="rx-page-wrap">
-      <div style={ppStyles.card}>
+      <div style={ppStyles.card} className="rx-card-print">
         <div style={ppStyles.rxViewerHeader} className="no-print">
           <button style={ppStyles.backBtnPlain} onClick={onBack}>← Back to history</button>
           <button style={ppStyles.printRecordBtnDark} onClick={handlePrint}><Printer size={13} style={{ marginRight: 6 }} />Print</button>
@@ -2654,7 +2711,7 @@ function PrescriptionViewer({ entry, patient, onBack, printSettings, vaxList, vi
           </div>
         )}
       </div>
-      <style>{`@media print { .no-print { display: none !important; } @page { margin: ${ps.marginTop}mm ${ps.marginRight}mm ${ps.marginBottom}mm ${ps.marginLeft}mm; } }`}</style>
+      <style>{`@media print { .no-print { display: none !important; } .rx-page-wrap { min-height: 0 !important; padding: 0 !important; display: block !important; } .rx-card-print { max-width: none !important; width: 100% !important; border: none !important; border-radius: 0 !important; } @page { margin: ${ps.marginTop}mm ${ps.marginRight}mm ${ps.marginBottom}mm ${ps.marginLeft}mm; size: A4; } }`}</style>
     </div>
   );
 }
@@ -2668,7 +2725,7 @@ function HandwrittenPrescriptionView({ patient, doctorName, onBack, printSetting
   const latestVitals = (vitalsHistory && vitalsHistory[0]) || null;
   return (
     <div style={ppStyles.page} className="rx-page-wrap">
-      <div style={{ ...ppStyles.card, display: "flex", flexDirection: "column", minHeight: `calc(297mm - ${ps.marginTop + ps.marginBottom}mm)` }}>
+      <div style={{ ...ppStyles.card, display: "flex", flexDirection: "column", minHeight: `calc(297mm - ${ps.marginTop + ps.marginBottom}mm)` }} className="rx-card-print">
         <div style={ppStyles.rxViewerHeader} className="no-print">
           <button style={ppStyles.backBtnPlain} onClick={onBack}>← Back to profile</button>
           <button style={ppStyles.printRecordBtnDark} onClick={handlePrint}><Printer size={13} style={{ marginRight: 6 }} />Print</button>
@@ -2696,12 +2753,9 @@ function HandwrittenPrescriptionView({ patient, doctorName, onBack, printSetting
             <div style={{ fontSize: 11.5, color: "#8A928F", fontStyle: "italic", marginTop: 10 }}>No vitals on record for this patient yet.</div>
           )}
           <div style={ppStyles.divider} />
-          {/* Ruled writing area stretches to fill all remaining page height (flex:1 + space-between),
-              so the signature block below always lands at the true bottom of the sheet regardless
-              of how much header content is above it — instead of floating wherever 12 fixed lines end. */}
-          <div style={{ display: "flex", flexDirection: "column", justifyContent: "space-between", gap: 20, marginTop: 6, marginBottom: 24, flex: 1 }}>
-            {Array.from({ length: 12 }).map((_, i) => <div key={i} style={{ borderBottom: "1px solid #DCD9D0", height: 1 }} />)}
-          </div>
+          {/* Blank writing area — flex:1 fills whatever page height remains below the
+              header, so the signature always lands at the true bottom of the sheet. */}
+          <div style={{ flex: 1, marginTop: 6, marginBottom: 24 }} />
           <div style={{ display: "flex", justifyContent: "flex-end", borderTop: "1px solid #E8E6DF", paddingTop: 14 }}>
             <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end" }}>
               <div style={{ width: 160, borderTop: "1px solid #1B2320", marginBottom: 4 }} />
@@ -2711,7 +2765,7 @@ function HandwrittenPrescriptionView({ patient, doctorName, onBack, printSetting
           </div>
         </div>
       </div>
-      <style>{`@media print { .no-print { display: none !important; } .rx-page-wrap { min-height: 0 !important; padding: 0 !important; } @page { margin: ${ps.marginTop}mm ${ps.marginRight}mm ${ps.marginBottom}mm ${ps.marginLeft}mm; } }`}</style>
+      <style>{`@media print { .no-print { display: none !important; } .rx-page-wrap { min-height: 0 !important; padding: 0 !important; display: block !important; } .rx-card-print { max-width: none !important; width: 100% !important; border: none !important; border-radius: 0 !important; } @page { margin: ${ps.marginTop}mm ${ps.marginRight}mm ${ps.marginBottom}mm ${ps.marginLeft}mm; size: A4; } }`}</style>
     </div>
   );
 }
@@ -2739,7 +2793,7 @@ function VaccinationCertificateView({ patient, schedule, onBack, printSettings, 
 
   return (
     <div style={ppStyles.page} className="rx-page-wrap">
-      <div style={ppStyles.card}>
+      <div style={ppStyles.card} className="rx-card-print">
         <div style={ppStyles.rxViewerHeader} className="no-print">
           <button style={ppStyles.backBtnPlain} onClick={onBack}>← Back to profile</button>
           <button style={ppStyles.printRecordBtnDark} onClick={handlePrint}><Printer size={13} style={{ marginRight: 6 }} />Print</button>
@@ -2824,7 +2878,7 @@ function VaccinationCertificateView({ patient, schedule, onBack, printSettings, 
           </div>
         </div>
       </div>
-      <style>{`@media print { .no-print { display: none !important; } @page { margin: ${ps.marginTop}mm ${ps.marginRight}mm ${ps.marginBottom}mm ${ps.marginLeft}mm; } }`}</style>
+      <style>{`@media print { .no-print { display: none !important; } .rx-page-wrap { min-height: 0 !important; padding: 0 !important; display: block !important; } .rx-card-print { max-width: none !important; width: 100% !important; border: none !important; border-radius: 0 !important; } @page { margin: ${ps.marginTop}mm ${ps.marginRight}mm ${ps.marginBottom}mm ${ps.marginLeft}mm; size: A4; } }`}</style>
     </div>
   );
 }
