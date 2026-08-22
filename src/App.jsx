@@ -513,6 +513,9 @@ function DoctorDashboardScreen({ onSelectPatient, allPatients, session, vaccinat
   // this is real interconnection with Reception's check-in and the doctor's own consultations.
   const liveQueueReal = checkedInToday
     .filter((a) => !(patientHistoryRecords?.[a.patientId] || []).some((h) => h.date === todayLabel))
+    // A doctor's Live queue must contain only patients assigned to that logged-in doctor.
+    // "All patients" below remains intentionally unfiltered.
+    .filter((a) => String(a.doctor || "").trim().toLowerCase() === String(session.name || "").trim().toLowerCase())
     .map((a) => ({ ...a, name: a.name || a.patientName, dob: patientDob(a.patientId) }));
   const checkedOutMap = new Map();
   checkedInToday
@@ -2810,7 +2813,7 @@ function PrescriptionViewer({ entry, patient, onBack, printSettings, vaxList, vi
           </div>
         )}
       </div>
-      <style>{`@media print { .no-print { display: none !important; } .rx-page-wrap { min-height: 0 !important; padding: 0 !important; display: block !important; } .rx-card-print { max-width: none !important; width: 100% !important; border: none !important; border-radius: 0 !important; } @page { margin: ${ps.marginTop}mm ${ps.marginRight}mm ${ps.marginBottom}mm ${ps.marginLeft}mm; size: A4; } }`}</style>
+      <style>{`@media print { html, body { margin: 0 !important; padding: 0 !important; background: #fff !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; } .no-print { display: none !important; } .rx-page-wrap { min-height: 0 !important; padding: ${ps.marginTop}mm ${ps.marginRight}mm ${ps.marginBottom}mm ${ps.marginLeft}mm !important; display: block !important; background: #fff !important; box-sizing: border-box !important; } .rx-card-print { max-width: none !important; width: 100% !important; border: none !important; border-radius: 0 !important; box-shadow: none !important; background: #fff !important; } @page { margin: 0; size: A4; } }`}</style>
     </div>
   );
 }
@@ -2859,16 +2862,16 @@ function HandwrittenPrescriptionView({ patient, doctorName, onBack, printSetting
           {/* Blank writing area — flex:1 fills whatever page height remains below the
               header, so the signature always lands at the true bottom of the sheet. */}
           <div style={{ flex: 1, marginTop: 6, marginBottom: 24 }} />
-          <div style={{ display: "flex", justifyContent: "flex-end", borderTop: "1px solid #E8E6DF", paddingTop: 14 }}>
-            <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end" }}>
-              <div style={{ width: 160, borderTop: "1px solid #1B2320", marginBottom: 4 }} />
-              <div style={{ fontSize: 10.5, color: "#B0B5B1", marginBottom: 8 }}>Signature</div>
+          <div className="handwritten-signature" style={{ display: "flex", justifyContent: "flex-end", paddingTop: 14, marginTop: "auto", breakInside: "avoid", pageBreakInside: "avoid" }}>
+            <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", minWidth: 180 }}>
+              <div style={{ width: 160, borderTop: "1px solid #1B2320", marginBottom: 5 }} />
+              <div style={{ fontSize: 11, color: "#1B2320", marginBottom: 8, fontWeight: 600 }}>Signature</div>
               <div style={{ fontSize: 12.5, color: "#1B2320", fontWeight: 700 }}>{doctorName}</div>
             </div>
           </div>
         </div>
       </div>
-      <style>{`@media print { .no-print { display: none !important; } .rx-page-wrap { min-height: 0 !important; padding: 0 !important; display: block !important; } .rx-card-print { max-width: none !important; width: 100% !important; border: none !important; border-radius: 0 !important; } @page { margin: ${ps.marginTop}mm ${ps.marginRight}mm ${ps.marginBottom}mm ${ps.marginLeft}mm; size: A4; } }`}</style>
+      <style>{`@media print { html, body { margin: 0 !important; padding: 0 !important; background: #fff !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; } .no-print { display: none !important; } .rx-page-wrap { min-height: 0 !important; padding: ${ps.marginTop}mm ${ps.marginRight}mm ${ps.marginBottom}mm ${ps.marginLeft}mm !important; display: block !important; background: #fff !important; box-sizing: border-box !important; } .rx-card-print { max-width: none !important; width: 100% !important; border: none !important; border-radius: 0 !important; box-shadow: none !important; background: #fff !important; } @page { margin: 0; size: A4; } }`}</style>
     </div>
   );
 }
@@ -2981,7 +2984,7 @@ function VaccinationCertificateView({ patient, schedule, onBack, printSettings, 
           </div>
         </div>
       </div>
-      <style>{`@media print { .no-print { display: none !important; } .rx-page-wrap { min-height: 0 !important; padding: 0 !important; display: block !important; } .rx-card-print { max-width: none !important; width: 100% !important; border: none !important; border-radius: 0 !important; } @page { margin: ${ps.marginTop}mm ${ps.marginRight}mm ${ps.marginBottom}mm ${ps.marginLeft}mm; size: A4; } }`}</style>
+      <style>{`@media print { html, body { margin: 0 !important; padding: 0 !important; background: #fff !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; } .no-print { display: none !important; } .rx-page-wrap { min-height: 0 !important; padding: ${ps.marginTop}mm ${ps.marginRight}mm ${ps.marginBottom}mm ${ps.marginLeft}mm !important; display: block !important; background: #fff !important; box-sizing: border-box !important; } .rx-card-print { max-width: none !important; width: 100% !important; border: none !important; border-radius: 0 !important; box-shadow: none !important; background: #fff !important; } @page { margin: 0; size: A4; } }`}</style>
     </div>
   );
 }
@@ -3440,6 +3443,7 @@ function ClinicSettings({ accounts, setAccounts, refreshAccounts, session, print
           <button onClick={() => setSubTab("rooms")} style={{ ...settingsStyles.subTabBtn, ...(subTab === "rooms" ? settingsStyles.subTabBtnActive : {}) }}>Room Setup</button>
           <button onClick={() => setSubTab("apptTypes")} style={{ ...settingsStyles.subTabBtn, ...(subTab === "apptTypes" ? settingsStyles.subTabBtnActive : {}) }}>Appointment Types</button>
           <button onClick={() => setSubTab("print")} style={{ ...settingsStyles.subTabBtn, ...(subTab === "print" ? settingsStyles.subTabBtnActive : {}) }}>Print Settings</button>
+          <button onClick={() => setSubTab("audit")} style={{ ...settingsStyles.subTabBtn, ...(subTab === "audit" ? settingsStyles.subTabBtnActive : {}) }}>Audit Log</button>
           <button onClick={() => setSubTab("backup")} style={{ ...settingsStyles.subTabBtn, ...(subTab === "backup" ? settingsStyles.subTabBtnActive : {}) }}>Data Export / Backup</button>
         </div>
 
@@ -3478,8 +3482,62 @@ function ClinicSettings({ accounts, setAccounts, refreshAccounts, session, print
         {subTab === "rooms" && <RoomSetupPanel rooms={rooms} setRooms={setRooms} />}
         {subTab === "apptTypes" && <AppointmentTypesPanel appointmentTypes={appointmentTypes} setAppointmentTypes={setAppointmentTypes} />}
         {subTab === "print" && <PrintSettingsPanel printSettings={printSettings} setPrintSettings={setPrintSettings} />}
+        {subTab === "audit" && <AuditLogPanel />}
         {subTab === "backup" && <DataExportBackupPanel backupData={backupData} />}
       </div>
+    </div>
+  );
+}
+
+function AuditLogPanel() {
+  const [entries, setEntries] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  const [filter, setFilter] = useState("all");
+
+  async function loadAudit() {
+    setLoading(true); setError("");
+    const [appointmentsRes, vitalsRes, consultationsRes] = await Promise.all([
+      supabase.from("appointments").select("*").order("check_in_at", { ascending: false }),
+      supabase.from("vitals").select("*").order("recorded_at", { ascending: false }),
+      supabase.from("consultations").select("*"),
+    ]);
+    if (appointmentsRes.error || vitalsRes.error || consultationsRes.error) {
+      setError("Some audit records could not be loaded. Please check the database permissions.");
+    }
+    const events = [];
+    (appointmentsRes.data || []).forEach((a) => {
+      if (a.created_at) events.push({ type: "appointment", at: a.created_at, title: "Appointment created", detail: `${a.patient_name || a.patient_id || "Patient"}${a.doctor_name ? ` · Dr. ${a.doctor_name}` : ""}` });
+      if (a.check_in_at) events.push({ type: "checkin", at: a.check_in_at, title: "Patient checked in", detail: `${a.patient_name || a.patient_id || "Patient"}${a.entry_source ? ` · ${a.entry_source}` : ""}` });
+      if (a.status === "cancelled") events.push({ type: "appointment", at: a.updated_at || a.created_at || a.check_in_at, title: "Appointment cancelled", detail: a.patient_name || a.patient_id || "Patient" });
+    });
+    (vitalsRes.data || []).forEach((v) => events.push({ type: "vitals", at: v.updated_at || v.recorded_at, title: "Vitals recorded/updated", detail: `Patient ${v.patient_id}${v.recorded_by ? ` · by ${v.recorded_by}` : ""}` }));
+    (consultationsRes.data || []).forEach((c) => events.push({ type: "consultation", at: c.created_at || c.updated_at || c.date_label, title: c.type === "IPD" ? "IPD record saved" : "Consultation saved", detail: `Patient ${c.patient_id}${c.consulting_doctor ? ` · Dr. ${c.consulting_doctor}` : ""}` }));
+    events.sort((a, b) => new Date(b.at || 0) - new Date(a.at || 0));
+    setEntries(events);
+    setLoading(false);
+  }
+  useEffect(() => { loadAudit(); }, []);
+  const shown = filter === "all" ? entries : entries.filter((e) => e.type === filter);
+  return (
+    <div style={{ padding: 4 }}>
+      <div style={settingsStyles.header}>
+        <div style={settingsStyles.iconBadge}><HistoryIcon size={20} color="#0B3B36" /></div>
+        <div><div style={settingsStyles.eyebrow}>ADMIN · AUDIT LOG</div><h1 style={settingsStyles.h1}>Clinical activity</h1><p style={settingsStyles.sub}>Review recorded appointments, check-ins, vitals and consultations. This is read-only and does not change any patient record.</p></div>
+      </div>
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 14 }}>
+        {[['all','All'],['appointment','Appointments'],['checkin','Check-ins'],['vitals','Vitals'],['consultation','Consultations']].map(([key,label]) => <button key={key} onClick={() => setFilter(key)} style={{ ...settingsStyles.roleChipOpt, ...(filter === key ? settingsStyles.roleChipOptActive : {}) }}>{label}</button>)}
+        <button onClick={loadAudit} style={{ ...settingsStyles.editStaffBtn, marginLeft: "auto" }}><RefreshCw size={13} style={{ marginRight: 5 }} />Refresh</button>
+      </div>
+      {error && <div style={{ fontSize: 12, color: "#9B2C2C", marginBottom: 10 }}>{error}</div>}
+      {loading ? <div style={{ fontSize: 13, color: "#8A928F", padding: "18px 0" }}>Loading audit log…</div> : shown.length === 0 ? <div style={{ fontSize: 13, color: "#8A928F", padding: "18px 0" }}>No recorded activity found yet.</div> : (
+        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+          {shown.map((e, i) => <div key={`${e.type}-${e.at}-${i}`} style={settingsStyles.auditRow}>
+            <div style={{ minWidth: 0, flex: 1 }}><div style={{ fontSize: 13, fontWeight: 700, color: "#1B2320" }}>{e.title}</div><div style={{ fontSize: 12, color: "#5B635F", marginTop: 2 }}>{e.detail}</div></div>
+            <div style={{ fontSize: 11, color: "#8A928F", textAlign: "right", whiteSpace: "nowrap" }}>{e.at ? indiaDateTimeLabel(new Date(e.at)) : "Date unavailable"}</div>
+          </div>)}
+        </div>
+      )}
     </div>
   );
 }
@@ -3784,6 +3842,7 @@ const settingsStyles = {
   staffForm: { display: "flex", flexDirection: "column", gap: 12, background: "#F6F5F1", border: "1px solid #EEECE5", borderRadius: 10, padding: 16, marginBottom: 16 },
   staffBackendNote: { fontSize: 11.5, lineHeight: 1.5, color: "#7A5B1F", background: "#FFF8E6", border: "1px solid #F0DFA8", borderRadius: 10, padding: "10px 12px", marginBottom: 16 },
   staffRow: { display: "flex", alignItems: "center", gap: 10, background: "#F6F5F1", border: "1px solid #EEECE5", borderRadius: 10, padding: "11px 12px" },
+  auditRow: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, background: "#F6F5F1", border: "1px solid #EEECE5", borderRadius: 10, padding: "11px 12px" },
   removeStaffBtn: { fontSize: 11.5, fontWeight: 600, color: "#9B2C2C", background: "#FDECEC", border: "1px solid #F5C6C6", borderRadius: 7, padding: "6px 11px", cursor: "pointer", whiteSpace: "nowrap" },
   editStaffBtn: { display: "flex", alignItems: "center", fontSize: 11.5, fontWeight: 600, color: "#0B3B36", background: "#fff", border: "1px solid #E8E6DF", borderRadius: 7, padding: "6px 11px", cursor: "pointer", whiteSpace: "nowrap" },
   roomChip: { display: "flex", alignItems: "center", gap: 8, background: "#F6F5F1", border: "1px solid #EEECE5", borderRadius: 20, padding: "6px 8px 6px 12px", fontSize: 12.5, fontWeight: 600, color: "#1B2320" },
