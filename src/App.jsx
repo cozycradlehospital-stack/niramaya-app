@@ -2180,6 +2180,9 @@ function PatientProfileScreen({ patient, onClose, session, printSettings, vaccin
     setHistory((prev) => [entry, ...prev]);
     setCreatingRx(false);
     setFollowUpSource(null);
+    // Open the prescription that was just saved immediately, so the doctor can print
+    // without going back through History or searching for the new entry.
+    setViewingRx(entry);
     supabase.from("consultations").insert(consultationToDb(entry, patient.id)).then(({ error }) => { if (error) console.error("Failed to save consultation", error); });
   }
   // Printing a handwritten sheet is also a completed consultation — it should move the
@@ -2192,7 +2195,7 @@ function PatientProfileScreen({ patient, onClose, session, printSettings, vaccin
     supabase.from("consultations").insert(consultationToDb(entry, patient.id)).then(({ error }) => { if (error) console.error("Failed to save consultation", error); });
   }
 
-  if (viewingRx) return <PrescriptionViewer entry={viewingRx} patient={profileData} onBack={() => setViewingRx(null)} printSettings={printSettings} vaxList={flattenSchedule(vaxSchedule)} vitalsHistory={vitalsHistory} clinicDetails={clinicDetails} />;
+  if (viewingRx) return <PrescriptionViewer entry={viewingRx} patient={profileData} onBack={() => setViewingRx(null)} printSettings={printSettings} vaxList={flattenSchedule(vaxSchedule)} vitalsHistory={vitalsHistory} clinicDetails={clinicDetails} quickPickLists={quickPickLists} setQuickPickLists={setQuickPickLists} />;
   if (creatingRx) return <NewConsultationForm patient={profileData} session={session} onCancel={() => { setCreatingRx(false); setFollowUpSource(null); }} onSave={saveNewConsultation} copyFrom={followUpSource} doctorNames={doctorNames} quickPickLists={quickPickLists} setQuickPickLists={setQuickPickLists} />;
   if (printingHandwritten) return <HandwrittenPrescriptionView patient={profileData} doctorName={session.name} onBack={() => setPrintingHandwritten(false)} printSettings={printSettings} vitalsHistory={vitalsHistory} onPrinted={recordHandwrittenCheckout} clinicDetails={clinicDetails} />;
   if (printingVaccination) return <VaccinationCertificateView patient={profileData} schedule={vaxSchedule} onBack={() => setPrintingVaccination(false)} printSettings={printSettings} clinicDetails={clinicDetails} />;
@@ -2406,6 +2409,7 @@ const initialLists = {
   medication: ["Paracetamol syrup", "Amoxicillin syrup", "ORS", "Zinc syrup", "Cetirizine syrup", "Domperidone syrup"],
   frequency: ["SOS (as needed)", "Before food", "After food", "At bedtime", "Every 6 hours", "Every 8 hours", "Every 12 hours"],
   instruction: ["Plenty of fluids", "Adequate rest", "Avoid oily food", "Steam inhalation", "Complete the full course"],
+  referral: [],
 };
 const frequencyOptions = [
   { key: "1", label: "Once a day (OD)" }, { key: "2", label: "Twice a day (BD)" },
@@ -2433,7 +2437,7 @@ function parseComplaintsForCopy(str) {
 function parseMedicationsForCopy(meds) {
   if (!meds || !meds.length) return [];
   return meds.map((m) => ({
-    name: m.name, dosage: m.dosage || "",
+    name: m.name, dosage: m.dosage || "", doseUnit: inferDoseUnit(m.dosage),
     frequency: frequencyOptions.find((f) => f.label === m.frequency)?.key || (m.frequency ? customFrequencyKey : "1"),
     customFrequency: frequencyOptions.some((f) => f.label === m.frequency) ? "" : (m.frequency || ""),
     durationDays: m.days || "", remark: m.remark || "",
@@ -2451,6 +2455,8 @@ function NewConsultationForm({ patient, session, onCancel, onSave, copyFrom, doc
   const [instructions, setInstructions] = useState(() => (copyFrom ? parseListForCopy(copyFrom.instructions) : []));
   const [panelName, setPanelName] = useState("");
   const [panelTests, setPanelTests] = useState([]);
+  const [showPanelBuilder, setShowPanelBuilder] = useState(false);
+  const [referral, setReferral] = useState(() => copyFrom?.referral || { name: "", phone: "" });
   const [followUps, setFollowUps] = useState(() => {
     if (!copyFrom?.followUp) return [];
     return copyFrom.followUp.split(" | ").map((x) => { const [date, ...reason] = x.split(" — "); return { date: date || "", reason: reason.join(" — ") }; });
@@ -2479,9 +2485,10 @@ function NewConsultationForm({ patient, session, onCancel, onSave, copyFrom, doc
       bookedDoctor, consultingDoctor: session.name, consultingDoctorId: session.username,
       complaints: complaints.map((c) => c.manualDuration ? `${c.name} (${c.manualDuration})` : c.durationValue ? `${c.name} (${c.durationValue} ${c.durationUnit})` : c.name).join(", "),
       findings: findings.join(", "), diagnosis: diagnoses.join(", "),
-      medications: medications.map((m) => ({ name: m.name, dosage: m.dosage || "", frequency: m.frequency === customFrequencyKey ? (m.customFrequency || "Custom frequency") : (frequencyOptions.find((f) => f.key === m.frequency)?.label || m.frequency), days: m.durationDays, remark: m.remark || "" })),
+      medications: medications.map((m) => ({ name: m.name, dosage: m.dosage ? `${m.dosage}${m.doseUnit ? ` ${m.doseUnit}` : ""}`.trim() : "", frequency: m.frequency === customFrequencyKey ? (m.customFrequency || "Custom frequency") : (frequencyOptions.find((f) => f.key === m.frequency)?.label || m.frequency), days: m.durationDays, remark: m.remark || "" })),
       investigations: investigations.join(", "), instructions: instructions.join(", "),
       followUp: followUps.map((f) => `${f.date}${f.reason ? ` — ${f.reason}` : ""}`).join(" | "),
+      referral: referral?.name ? { name: referral.name, phone: referral.phone || "" } : null,
     };
     onSave(record);
   }
@@ -2553,32 +2560,35 @@ function NewConsultationForm({ patient, session, onCancel, onSave, copyFrom, doc
           )}
           <Autocomplete options={lists.investigation || []} excluded={investigations} placeholder="Type to search or add investigation…" onSelect={(name) => setInvestigations((p) => [...p, name])} onAddNew={(name) => { addToMasterList("investigation", name); setInvestigations((p) => [...p, name]); }} />
           <TagList items={investigations} onRemove={(name) => setInvestigations((p) => p.filter((d) => d !== name))} />
-          <div style={consultStyles.panelBuilder}>
-            <div style={consultStyles.panelTitle}>Create investigation panel</div>
-            <input value={panelName} onChange={(e) => setPanelName(e.target.value)} placeholder="Panel name e.g. Fever panel" style={consultStyles.input} />
-            <div style={consultStyles.panelHint}>Select tests to include in this panel</div>
-            <div style={consultStyles.panelTestList}>
-              {(lists.investigation || []).map((test) => { const selected = panelTests.includes(test); return <button key={test} type="button" onClick={() => setPanelTests((p) => selected ? p.filter((x) => x !== test) : [...p, test])} style={{ ...consultStyles.freqChip, ...(selected ? consultStyles.freqChipActive : {}) }}>{test}</button>; })}
-            </div>
-            <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
-              <button type="button" style={consultStyles.freqChip} onClick={() => { setPanelName(""); setPanelTests([]); }}>Clear</button>
-              <button type="button" style={{ ...consultStyles.freqChip, ...consultStyles.freqChipActive }} onClick={() => { const name = panelName.trim(); const tests = [...new Set(panelTests.map((t) => t.trim()).filter(Boolean))]; if (!name || !tests.length) return; const existing = lists.investigationPanels || []; const next = [...existing.filter((p) => p.name.toLowerCase() !== name.toLowerCase()), { name, tests }]; setQuickPickLists?.((prev) => ({ ...prev, investigationPanels: next })); supabase.from("quick_pick_lists").upsert({ field: "investigationPanels", items: next }, { onConflict: "field" }).then(({ error }) => { if (error) console.error("Failed to save investigation panel", error); }); setPanelName(""); setPanelTests([]); }}>Save panel</button>
-            </div>
+          <div style={{ marginTop: 12 }}>
+            <button type="button" style={consultStyles.freqChip} onClick={() => setShowPanelBuilder((v) => !v)}>{showPanelBuilder ? "Close panel creator" : "Create investigation panel"}</button>
+            {showPanelBuilder && <div style={consultStyles.panelBuilder}>
+              <div style={consultStyles.panelTitle}>Create investigation panel</div>
+              <input value={panelName} onChange={(e) => setPanelName(e.target.value)} placeholder="Panel name e.g. Fever panel" style={consultStyles.input} />
+              <div style={consultStyles.panelHint}>Select tests to include in this panel</div>
+              <div style={consultStyles.panelTestList}>
+                {(lists.investigation || []).map((test) => { const selected = panelTests.includes(test); return <button key={test} type="button" onClick={() => setPanelTests((p) => selected ? p.filter((x) => x !== test) : [...p, test])} style={{ ...consultStyles.freqChip, ...(selected ? consultStyles.freqChipActive : {}) }}>{test}</button>; })}
+              </div>
+              <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+                <button type="button" style={consultStyles.freqChip} onClick={() => { setPanelName(""); setPanelTests([]); }}>Clear</button>
+                <button type="button" style={{ ...consultStyles.freqChip, ...consultStyles.freqChipActive }} onClick={() => { const name = panelName.trim(); const tests = [...new Set(panelTests.map((t) => t.trim()).filter(Boolean))]; if (!name || !tests.length) return; const existing = lists.investigationPanels || []; const next = [...existing.filter((p) => p.name.toLowerCase() !== name.toLowerCase()), { name, tests }]; setQuickPickLists?.((prev) => ({ ...prev, investigationPanels: next })); supabase.from("quick_pick_lists").upsert({ field: "investigationPanels", items: next }, { onConflict: "field" }).then(({ error }) => { if (error) console.error("Failed to save investigation panel", error); }); setPanelName(""); setPanelTests([]); setShowPanelBuilder(false); }}>Save panel</button>
+              </div>
+            </div>}
           </div>
         </FieldBlock>
 
         <FieldBlock icon={<Pill size={14} />} label="Medications">
           <Autocomplete options={lists.medication} excluded={medications.map((m) => m.name)} placeholder="Type to search or add…"
-            onSelect={(name) => setMedications((p) => [...p, { name, frequency: "1", durationDays: "" }])}
-            onAddNew={(name) => { addToMasterList("medication", name); setMedications((p) => [...p, { name, frequency: "1", durationDays: "" }]); }} />
+            onSelect={(name) => setMedications((p) => [...p, { name, frequency: "1", durationDays: "", doseUnit: "ml" }])}
+            onAddNew={(name) => { addToMasterList("medication", name); setMedications((p) => [...p, { name, frequency: "1", durationDays: "", doseUnit: "ml" }]); }} />
           <div style={consultStyles.selectedStack}>
             {medications.map((m, i) => (
               <div key={i} style={consultStyles.medicationCard}>
-                <div style={consultStyles.medicationTopRow}><span style={consultStyles.complaintName}>{m.name}</span><button type="button" onClick={() => setMedications((p) => p.filter((_, xi) => xi !== i))} style={consultStyles.removeRowBtn}><X size={13} /></button></div>
+                <div style={consultStyles.medicationTopRow}><div style={{ flex: 1, marginRight: 8 }}><input list={`new-med-options-${i}`} value={m.name} onChange={(e) => setMedications((p) => p.map((x, xi) => xi === i ? { ...x, name: e.target.value } : x))} onBlur={() => { if (m.name?.trim()) addToMasterList("medication", m.name); }} style={{ ...consultStyles.medExtraInput, width: "100%" }} placeholder="Medicine name" /><datalist id={`new-med-options-${i}`}>{(lists.medication || []).map((name) => <option key={name} value={name} />)}</datalist></div><button type="button" onClick={() => setMedications((p) => p.filter((_, xi) => xi !== i))} style={consultStyles.removeRowBtn}><X size={13} /></button></div>
                 <div style={consultStyles.freqChipRow}>{frequencyOptions.map((f) => <button key={f.key} type="button" onClick={() => setMedications((p) => p.map((x, xi) => (xi === i ? { ...x, frequency: f.key, customFrequency: "" } : x)))} style={{ ...consultStyles.freqChip, ...(m.frequency === f.key ? consultStyles.freqChipActive : {}) }}>{f.label}</button>)}<button type="button" onClick={() => setMedications((p) => p.map((x, xi) => (xi === i ? { ...x, frequency: customFrequencyKey } : x)))} style={{ ...consultStyles.freqChip, ...(m.frequency === customFrequencyKey ? consultStyles.freqChipActive : {}) }}>Other / Custom</button></div>
-                {m.frequency === customFrequencyKey && <Autocomplete options={lists.frequency || []} excluded={[]} placeholder="Type or select frequency (reusable)…" onSelect={(value) => setMedications((p) => p.map((x, xi) => (xi === i ? { ...x, customFrequency: value } : x)))} onAddNew={(value) => { addToMasterList("frequency", value); setMedications((p) => p.map((x, xi) => (xi === i ? { ...x, customFrequency: value } : x))); }} />}
+                {m.frequency === customFrequencyKey && <><Autocomplete options={lists.frequency || []} excluded={[]} placeholder="Type or select frequency (reusable)…" onSelect={(value) => setMedications((p) => p.map((x, xi) => (xi === i ? { ...x, customFrequency: value } : x)))} onAddNew={(value) => { addToMasterList("frequency", value); setMedications((p) => p.map((x, xi) => (xi === i ? { ...x, customFrequency: value } : x))); }} />}{m.customFrequency && <div style={{ fontSize: 12, marginTop: 6, color: "#0B3B36", fontWeight: 700 }}>Selected frequency: {m.customFrequency}</div>}</>}
                 <div style={consultStyles.medExtraRow}>
-                  <input value={m.dosage || ""} onChange={(e) => setMedications((p) => p.map((x, xi) => (xi === i ? { ...x, dosage: e.target.value } : x)))} placeholder="Amount e.g. 5ml, 1 tab" style={consultStyles.medExtraInput} />
+                  <input value={m.dosage || ""} onChange={(e) => setMedications((p) => p.map((x, xi) => (xi === i ? { ...x, dosage: e.target.value } : x)))} placeholder="Amount e.g. 5" style={consultStyles.medExtraInput} /><select value={m.doseUnit || "ml"} onChange={(e) => setMedications((p) => p.map((x, xi) => (xi === i ? { ...x, doseUnit: e.target.value } : x)))} style={consultStyles.durationUnitSelect}><option value="tab">Tab</option><option value="ml">ml</option><option value="drops">Drops</option></select>
                   {!(m.frequency === customFrequencyKey && m.customFrequency === "SOS (as needed)") && <><span style={consultStyles.forLabel}>for</span><input type="number" min="0" value={m.durationDays} onChange={(e) => setMedications((p) => p.map((x, xi) => (xi === i ? { ...x, durationDays: e.target.value } : x)))} placeholder="e.g. 5" style={consultStyles.durationNumInput} /><span style={consultStyles.forLabel}>days</span></>}
                 </div>
                 <input value={m.remark || ""} onChange={(e) => setMedications((p) => p.map((x, xi) => (xi === i ? { ...x, remark: e.target.value } : x)))} placeholder="Remark e.g. After food, At bedtime" style={{ ...consultStyles.medExtraInput, width: "100%", marginTop: 6, boxSizing: "border-box" }} />
@@ -2590,6 +2600,18 @@ function NewConsultationForm({ patient, session, onCancel, onSave, copyFrom, doc
         <FieldBlock icon={<MessageSquareText size={14} />} label="Instructions">
           <Autocomplete options={lists.instruction} excluded={instructions} placeholder="Type to search or add…" onSelect={(name) => setInstructions((p) => [...p, name])} onAddNew={(name) => { addToMasterList("instruction", name); setInstructions((p) => [...p, name]); }} />
           <TagList items={instructions} onRemove={(name) => setInstructions((p) => p.filter((d) => d !== name))} />
+        </FieldBlock>
+
+        <FieldBlock icon={<UserPlus2 size={14} />} label="Refer to another doctor">
+          <select style={consultStyles.input} value={referral?.name || ""} onChange={(e) => { const selected = (lists.referral || []).find((r) => r.name === e.target.value); setReferral(selected ? { name: selected.name, phone: selected.phone || "" } : { name: "", phone: "" }); }}>
+            <option value="">Select saved referral</option>
+            {(lists.referral || []).map((r) => <option key={`${r.name}-${r.phone || ""}`} value={r.name}>{r.name}{r.phone ? ` — ${r.phone}` : ""}</option>)}
+          </select>
+          <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+            <input style={consultStyles.input} value={referral?.name || ""} onChange={(e) => setReferral({ ...(referral || {}), name: e.target.value })} placeholder="Doctor name" />
+            <input style={consultStyles.input} value={referral?.phone || ""} onChange={(e) => setReferral({ ...(referral || {}), phone: e.target.value })} placeholder="Phone number" />
+            <button type="button" style={consultStyles.freqChip} onClick={() => { const name = referral?.name?.trim(); if (!name) return; const item = { name, phone: referral?.phone?.trim() || "" }; const next = [...(lists.referral || []).filter((r) => !(r.name.toLowerCase() === item.name.toLowerCase() && (r.phone || "") === item.phone)), item]; setQuickPickLists?.((prev) => ({ ...prev, referral: next })); supabase.from("quick_pick_lists").upsert({ field: "referral", items: next }, { onConflict: "field" }).then(({ error }) => { if (error) console.error("Failed to save referral", error); }); }}>Save</button>
+          </div>
         </FieldBlock>
 
         <FieldBlock icon={<Calendar size={14} />} label="Follow-up dates">
@@ -2693,12 +2715,14 @@ const defaultPrintSettings = {
   includeVaccination: true, includeFollowUp: true, includeGrowthChart: false,
 };
 
-function PrescriptionViewer({ entry, patient, onBack, printSettings, vaxList, vitalsHistory, clinicDetails }) {
+function PrescriptionViewer({ entry, patient, onBack, printSettings, vaxList, vitalsHistory, clinicDetails, quickPickLists, setQuickPickLists }) {
+  const editLists = quickPickLists || initialLists;
   const ps = { ...defaultPrintSettings, ...(printSettings || {}) };
   const clinic = clinicDetails || { name: "Niramaya Clinic", address: "", phone: "" };
   const [editing, setEditing] = useState(false);
   const [rx, setRx] = useState(entry.prescription);
   const [draft, setDraft] = useState(entry.prescription);
+  const [justSaved, setJustSaved] = useState(false);
   function handlePrint() { window.print(); }
 
   // Prefer the vitals entry recorded on the same day as this consultation;
@@ -2714,8 +2738,9 @@ function PrescriptionViewer({ entry, patient, onBack, printSettings, vaxList, vi
     <div style={ppStyles.page} className="rx-page-wrap">
       <div style={ppStyles.card} className="rx-card-print">
         <div style={ppStyles.rxViewerHeader} className="no-print">
-          <button style={ppStyles.backBtnPlain} onClick={onBack}>← Back to history</button>
-          <button style={ppStyles.printRecordBtnDark} onClick={handlePrint}><Printer size={13} style={{ marginRight: 6 }} />Print</button>
+          <button style={ppStyles.backBtnPlain} onClick={onBack}>← Back to prescription</button>
+          {justSaved && <span style={{ fontSize: 12, color: "#0B3B36", fontWeight: 600, marginLeft: "auto" }}>✓ Prescription saved</span>}
+          <button style={ppStyles.printRecordBtnDark} onClick={handlePrint}><Printer size={13} style={{ marginRight: 6 }} />Print Prescription</button>
         </div>
         {ps.includeClinicHeader && (
           <div style={ppStyles.rxClinicHeader}>
@@ -2749,29 +2774,33 @@ function PrescriptionViewer({ entry, patient, onBack, printSettings, vaxList, vi
         <div style={ppStyles.divider} />
         {editing ? (
           <div style={{ padding: 20, display: "flex", flexDirection: "column", gap: 14 }}>
-            <RxField label="Complaints" value={draft.complaints} onChange={(v) => setDraft({ ...draft, complaints: v })} />
-            <RxField label="Findings" value={draft.findings} onChange={(v) => setDraft({ ...draft, findings: v })} />
-            <RxField label="Diagnosis" value={draft.diagnosis} onChange={(v) => setDraft({ ...draft, diagnosis: v })} />
+            <EditReusableField label="Complaints" value={draft.complaints} onChange={(v) => setDraft({ ...draft, complaints: v })} options={editLists.complaint || []} field="complaint" setQuickPickLists={setQuickPickLists} />
+            <EditReusableField label="Findings" value={draft.findings} onChange={(v) => setDraft({ ...draft, findings: v })} options={editLists.finding || []} field="finding" setQuickPickLists={setQuickPickLists} />
+            <EditReusableField label="Diagnosis" value={draft.diagnosis} onChange={(v) => setDraft({ ...draft, diagnosis: v })} options={editLists.diagnosis || []} field="diagnosis" setQuickPickLists={setQuickPickLists} />
 
             <div>
               <div style={{ fontSize: 12, fontWeight: 600, color: "#3C4441", marginBottom: 8 }}>Medications</div>
               {(draft.medications || []).map((m, i) => (
                 <div key={i} style={ppStyles.medEditRow}>
-                  <input style={{ ...ppStyles.editInput, flex: 2 }} value={m.name} onChange={(e) => setDraft({ ...draft, medications: draft.medications.map((mm, mi) => (mi === i ? { ...mm, name: e.target.value } : mm)) })} placeholder="Medicine name" />
-                  <input style={{ ...ppStyles.editInput, flex: 1 }} value={m.dosage || ""} onChange={(e) => setDraft({ ...draft, medications: draft.medications.map((mm, mi) => (mi === i ? { ...mm, dosage: e.target.value } : mm)) })} placeholder="Amount e.g. 5ml" />
-                  <input style={{ ...ppStyles.editInput, flex: 1 }} value={m.frequency} onChange={(e) => setDraft({ ...draft, medications: draft.medications.map((mm, mi) => (mi === i ? { ...mm, frequency: e.target.value } : mm)) })} placeholder="Frequency" />
+                  <input list={`edit-med-options-${i}`} style={{ ...ppStyles.editInput, flex: 2 }} value={m.name || ""} onChange={(e) => setDraft({ ...draft, medications: draft.medications.map((mm, mi) => (mi === i ? { ...mm, name: e.target.value } : mm)) })} onBlur={() => saveQuickPickItem("medication", m.name, editLists, setQuickPickLists)} placeholder="Medicine name" />
+                  <datalist id={`edit-med-options-${i}`}>{(editLists.medication || []).map((name) => <option key={name} value={name} />)}</datalist>
+                  <input style={{ ...ppStyles.editInput, width: 70 }} value={m.dosage || ""} onChange={(e) => setDraft({ ...draft, medications: draft.medications.map((mm, mi) => (mi === i ? { ...mm, dosage: e.target.value } : mm)) })} placeholder="Dose" />
+                  <select style={{ ...ppStyles.editInput, width: 70 }} value={m.doseUnit || inferDoseUnit(m.dosage)} onChange={(e) => setDraft({ ...draft, medications: draft.medications.map((mm, mi) => (mi === i ? { ...mm, doseUnit: e.target.value } : mm)) })}><option value="tab">Tab</option><option value="ml">ml</option><option value="drops">Drops</option></select>
+                  <input list={`edit-freq-options-${i}`} style={{ ...ppStyles.editInput, flex: 1 }} value={m.frequency || ""} onChange={(e) => setDraft({ ...draft, medications: draft.medications.map((mm, mi) => (mi === i ? { ...mm, frequency: e.target.value } : mm)) })} onBlur={() => saveQuickPickItem("frequency", m.frequency, editLists, setQuickPickLists)} placeholder="Frequency" />
+                  <datalist id={`edit-freq-options-${i}`}>{[...frequencyOptions.map((f) => f.label), ...(editLists.frequency || [])].map((f) => <option key={f} value={f} />)}</datalist>
                   <input style={{ ...ppStyles.editInput, width: 55 }} value={m.days || ""} onChange={(e) => setDraft({ ...draft, medications: draft.medications.map((mm, mi) => (mi === i ? { ...mm, days: e.target.value } : mm)) })} placeholder="Days" />
                   <input style={{ ...ppStyles.editInput, flex: 1 }} value={m.remark || ""} onChange={(e) => setDraft({ ...draft, medications: draft.medications.map((mm, mi) => (mi === i ? { ...mm, remark: e.target.value } : mm)) })} placeholder="Remark" />
                   <button type="button" style={ppStyles.medRemoveBtn} onClick={() => setDraft({ ...draft, medications: draft.medications.filter((_, mi) => mi !== i) })}><X size={13} /></button>
                 </div>
               ))}
-              <button type="button" style={ppStyles.medAddBtn} onClick={() => setDraft({ ...draft, medications: [...(draft.medications || []), { name: "", dosage: "", frequency: "", days: "", remark: "" }] })}><Plus size={13} style={{ marginRight: 4 }} />Add medicine</button>
+              <button type="button" style={ppStyles.medAddBtn} onClick={() => setDraft({ ...draft, medications: [...(draft.medications || []), { name: "", dosage: "", doseUnit: "ml", frequency: "", days: "", remark: "" }] })}><Plus size={13} style={{ marginRight: 4 }} />Add medicine</button>
             </div>
 
-            <RxField label="Investigations" value={draft.investigations} onChange={(v) => setDraft({ ...draft, investigations: v })} />
+            <EditReusableField label="Investigations" value={draft.investigations} onChange={(v) => setDraft({ ...draft, investigations: v })} options={editLists.investigation || []} field="investigation" setQuickPickLists={setQuickPickLists} />
             <RxField label="Instructions" value={draft.instructions} onChange={(v) => setDraft({ ...draft, instructions: v })} />
             <RxField label="Follow-up" value={draft.followUp} onChange={(v) => setDraft({ ...draft, followUp: v })} />
-            <div style={ppStyles.editActions}><button style={ppStyles.saveBtn} onClick={() => { setRx(draft); setEditing(false); }}>Save changes</button><button style={ppStyles.cancelBtn} onClick={() => setEditing(false)}>Cancel</button></div>
+            <div><div style={ppStyles.editLabel}>Refer to</div><select style={ppStyles.editInput} value={draft.referral?.name || ""} onChange={(e) => { const r = (editLists.referral || []).find((x) => x.name === e.target.value); setDraft({ ...draft, referral: r ? { name: r.name, phone: r.phone || "" } : null }); }}><option value="">No referral</option>{(editLists.referral || []).map((r) => <option key={`${r.name}-${r.phone || ""}`} value={r.name}>{r.name}{r.phone ? ` — ${r.phone}` : ""}</option>)}</select></div>
+            <div style={ppStyles.editActions}><button style={ppStyles.saveBtn} onClick={() => { const next = { ...draft, medications: normalizePrescriptionMedications(draft.medications) }; setDraft(next); setRx(next); setJustSaved(true); setEditing(false); }}>Save changes</button><button style={ppStyles.cancelBtn} onClick={() => setEditing(false)}>Cancel</button></div>
           </div>
         ) : (
           <div style={{ paddingBottom: 24 }}>
@@ -2837,6 +2866,7 @@ function PrescriptionViewer({ entry, patient, onBack, printSettings, vaxList, vi
               );
             })()}
             {ps.includeFollowUp && <RxSection label="Follow-up" value={rx.followUp} />}
+            {rx.referral?.name && <RxSection label="Referral" value={`${rx.referral.name}${rx.referral.phone ? ` — ${rx.referral.phone}` : ""}`} />}
             {ps.includeGrowthChart && ageInMonths(patient.dob) <= 216 && (
               <div style={ppStyles.rxSectionBlock}>
                 <div style={ppStyles.rxSectionLabel}>Growth Chart</div>
@@ -2848,7 +2878,7 @@ function PrescriptionViewer({ entry, patient, onBack, printSettings, vaxList, vi
               <div style={ppStyles.rxSignatureName}>{entry.consultingDoctor || entry.doctor}</div>
               <div style={ppStyles.rxSignatureSub}>Consulting Doctor</div>
             </div>
-            <button style={{ ...ppStyles.editTrigger, margin: "0 20px" }} className="no-print" onClick={() => { setDraft(rx); setEditing(true); }}>Edit prescription</button>
+            <button style={{ ...ppStyles.editTrigger, margin: "0 20px" }} className="no-print" onClick={() => { setDraft({ ...rx, medications: (rx.medications || []).map((m) => ({ ...m, dosage: stripDoseUnit(m.dosage), doseUnit: m.doseUnit || inferDoseUnit(m.dosage) })) }); setEditing(true); }}>Edit prescription</button>
           </div>
         )}
       </div>
@@ -2915,6 +2945,29 @@ function HandwrittenPrescriptionView({ patient, doctorName, onBack, printSetting
   );
 }
 function RxSection({ label, value }) { if (!value) return null; return <div style={ppStyles.rxSectionBlock}><div style={ppStyles.rxSectionLabel}>{label}</div><div style={ppStyles.rxSectionValue}>{value}</div></div>; }
+function stripDoseUnit(value) { return String(value || "").replace(/\s*(tab|tabs|tablet|tablets|ml|mL|drops?)\b/gi, "").trim(); }
+function normalizePrescriptionMedications(medications) {
+  return (medications || []).map((m) => {
+    const unit = m.doseUnit || inferDoseUnit(m.dosage);
+    const amount = stripDoseUnit(m.dosage);
+    return { ...m, dosage: amount ? `${amount} ${unit}` : "", doseUnit: unit };
+  });
+}
+function saveQuickPickItem(field, value, lists, setQuickPickLists) {
+  const clean = (value || "").trim();
+  if (!clean || !setQuickPickLists) return;
+  const existing = lists[field] || [];
+  if (existing.some((x) => String(x).toLowerCase() === clean.toLowerCase())) return;
+  const next = [...existing, clean];
+  setQuickPickLists((prev) => ({ ...prev, [field]: next }));
+  supabase.from("quick_pick_lists").upsert({ field, items: next }, { onConflict: "field" }).then(({ error }) => { if (error) console.error("Failed to save quick-pick item", error); });
+}
+function inferDoseUnit(value) { const v = String(value || "").toLowerCase(); if (v.includes("drop")) return "drops"; if (v.includes("tab")) return "tab"; return "ml"; }
+function EditReusableField({ label, value, onChange, options, field, setQuickPickLists }) {
+  const items = parseListForCopy(value || "");
+  const add = (name) => { const next = [...items, name]; onChange(next.join(", ")); saveQuickPickItem(field, name, { [field]: options }, setQuickPickLists); };
+  return <div><div style={ppStyles.editLabel}>{label}</div><Autocomplete options={options || []} excluded={items} placeholder={`Type or select ${label.toLowerCase()}…`} onSelect={add} onAddNew={add} /><TagList items={items} onRemove={(name) => onChange(items.filter((x) => x !== name).join(", "))} /></div>;
+}
 function RxField({ label, value, onChange }) { return <label style={ppStyles.editLabel}>{label}<textarea style={{ ...ppStyles.editInput, minHeight: 50, resize: "vertical", fontFamily: "inherit" }} value={value} onChange={(e) => onChange(e.target.value)} /></label>; }
 
 /* ============================================================================
