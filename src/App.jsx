@@ -2882,7 +2882,7 @@ function PrescriptionViewer({ entry, patient, onBack, printSettings, vaxList, vi
           </div>
         )}
       </div>
-      <style>{`@media print { html, body { margin: 0 !important; padding: 0 !important; background: #fff !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; } .no-print { display: none !important; } .rx-page-wrap { min-height: 0 !important; padding: ${ps.marginTop}mm ${ps.marginRight}mm ${ps.marginBottom}mm ${ps.marginLeft}mm !important; display: block !important; background: #fff !important; box-sizing: border-box !important; } .rx-card-print { max-width: none !important; width: 100% !important; border: none !important; border-radius: 0 !important; box-shadow: none !important; background: #fff !important; } @page { margin: 0; size: A4; } }`}</style>
+      <style>{`@media print { html, body { margin: 0 !important; padding: 0 !important; background: #fff !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; } .no-print { display: none !important; } .rx-page-wrap { min-height: 0 !important; padding: ${ps.marginTop}mm ${ps.marginRight}mm ${ps.marginBottom}mm ${ps.marginLeft}mm !important; display: block !important; background: #fff !important; box-sizing: border-box !important; } .rx-card-print { max-width: none !important; width: 100% !important; margin: 0 !important; border: 0 !important; outline: 0 !important; border-radius: 0 !important; box-shadow: none !important; background: #fff !important; } @page { margin: 0; size: A4; } }`}</style>
     </div>
   );
 }
@@ -2896,12 +2896,12 @@ function HandwrittenPrescriptionView({ patient, doctorName, onBack, printSetting
   const latestVitals = (vitalsHistory && vitalsHistory[0]) || null;
   return (
     <div style={ppStyles.page} className="rx-page-wrap">
-      <div style={{ ...ppStyles.card, display: "flex", flexDirection: "column", minHeight: `calc(297mm - ${ps.marginTop + ps.marginBottom}mm)` }} className="rx-card-print">
+      <div style={{ ...ppStyles.card, display: "flex", flexDirection: "column", minHeight: `calc(297mm - ${ps.marginTop + ps.marginBottom}mm)` }} className="rx-card-print handwritten-print-card">
         <div style={ppStyles.rxViewerHeader} className="no-print">
           <button style={ppStyles.backBtnPlain} onClick={onBack}>← Back to profile</button>
           <button style={ppStyles.printRecordBtnDark} onClick={handlePrint}><Printer size={13} style={{ marginRight: 6 }} />Print</button>
         </div>
-        <div style={{ padding: "10px 20px 24px", display: "flex", flexDirection: "column", flex: 1 }}>
+        <div style={{ padding: "10px 20px 24px", display: "flex", flexDirection: "column", flex: 1, minHeight: 0, boxSizing: "border-box" }} className="handwritten-print-body">
           {ps.includeClinicHeader && (
             <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 6 }}>
               <div style={{ width: 38, height: 38, borderRadius: 9, background: "#E7EFEC", display: "flex", alignItems: "center", justifyContent: "center" }}><Stethoscope size={20} color="#0B3B36" /></div>
@@ -2930,8 +2930,8 @@ function HandwrittenPrescriptionView({ patient, doctorName, onBack, printSetting
           <div style={ppStyles.divider} />
           {/* Blank writing area — flex:1 fills whatever page height remains below the
               header, so the signature always lands at the true bottom of the sheet. */}
-          <div style={{ flex: 1, marginTop: 6, marginBottom: 24 }} />
-          <div className="handwritten-signature" style={{ display: "flex", justifyContent: "flex-end", paddingTop: 14, marginTop: "auto", breakInside: "avoid", pageBreakInside: "avoid" }}>
+          <div className="handwritten-writing-space" style={{ flex: 1, minHeight: 0, marginTop: 6, marginBottom: 12 }} />
+          <div className="handwritten-signature" style={{ display: "flex", justifyContent: "flex-end", paddingTop: 14, marginTop: 0, flexShrink: 0, breakInside: "avoid", pageBreakInside: "avoid" }}>
             <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", minWidth: 180 }}>
               <div style={{ width: 160, borderTop: "1px solid #1B2320", marginBottom: 5 }} />
               <div style={{ fontSize: 11, color: "#1B2320", marginBottom: 8, fontWeight: 600 }}>Signature</div>
@@ -2940,7 +2940,16 @@ function HandwrittenPrescriptionView({ patient, doctorName, onBack, printSetting
           </div>
         </div>
       </div>
-      <style>{`@media print { html, body { margin: 0 !important; padding: 0 !important; background: #fff !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; } .no-print { display: none !important; } .rx-page-wrap { min-height: 0 !important; padding: ${ps.marginTop}mm ${ps.marginRight}mm ${ps.marginBottom}mm ${ps.marginLeft}mm !important; display: block !important; background: #fff !important; box-sizing: border-box !important; } .rx-card-print { max-width: none !important; width: 100% !important; border: none !important; border-radius: 0 !important; box-shadow: none !important; background: #fff !important; } @page { margin: 0; size: A4; } }`}</style>
+      <style>{`@media print {
+        @page { size: A4; margin: 0; }
+        html, body { width: 210mm !important; height: 297mm !important; margin: 0 !important; padding: 0 !important; background: #fff !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+        .no-print { display: none !important; }
+        .rx-page-wrap { width: 210mm !important; min-height: 297mm !important; height: 297mm !important; margin: 0 !important; padding: ${ps.marginTop}mm ${ps.marginRight}mm ${ps.marginBottom}mm ${ps.marginLeft}mm !important; display: block !important; background: #fff !important; box-sizing: border-box !important; border: 0 !important; outline: 0 !important; box-shadow: none !important; }
+        .rx-card-print, .handwritten-print-card { max-width: none !important; width: 100% !important; height: calc(297mm - ${ps.marginTop + ps.marginBottom}mm) !important; min-height: 0 !important; margin: 0 !important; border: 0 !important; outline: 0 !important; border-radius: 0 !important; box-shadow: none !important; background: #fff !important; overflow: hidden !important; box-sizing: border-box !important; }
+        .handwritten-print-body { min-height: 0 !important; overflow: hidden !important; }
+        .handwritten-writing-space { min-height: 0 !important; overflow: hidden !important; }
+        .handwritten-signature { flex-shrink: 0 !important; margin-top: 0 !important; }
+      }`}</style>
     </div>
   );
 }
@@ -3076,7 +3085,7 @@ function VaccinationCertificateView({ patient, schedule, onBack, printSettings, 
           </div>
         </div>
       </div>
-      <style>{`@media print { html, body { margin: 0 !important; padding: 0 !important; background: #fff !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; } .no-print { display: none !important; } .rx-page-wrap { min-height: 0 !important; padding: ${ps.marginTop}mm ${ps.marginRight}mm ${ps.marginBottom}mm ${ps.marginLeft}mm !important; display: block !important; background: #fff !important; box-sizing: border-box !important; } .rx-card-print { max-width: none !important; width: 100% !important; border: none !important; border-radius: 0 !important; box-shadow: none !important; background: #fff !important; } @page { margin: 0; size: A4; } }`}</style>
+      <style>{`@media print { html, body { margin: 0 !important; padding: 0 !important; background: #fff !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; } .no-print { display: none !important; } .rx-page-wrap { min-height: 0 !important; padding: ${ps.marginTop}mm ${ps.marginRight}mm ${ps.marginBottom}mm ${ps.marginLeft}mm !important; display: block !important; background: #fff !important; box-sizing: border-box !important; } .rx-card-print { max-width: none !important; width: 100% !important; margin: 0 !important; border: 0 !important; outline: 0 !important; border-radius: 0 !important; box-shadow: none !important; background: #fff !important; } @page { margin: 0; size: A4; } }`}</style>
     </div>
   );
 }
