@@ -2404,12 +2404,14 @@ const initialLists = {
   investigation: ["CBC", "CRP", "Urine routine", "Chest X-ray", "Blood culture", "Stool routine", "Dengue NS1"],
   investigationPanels: [],
   medication: ["Paracetamol syrup", "Amoxicillin syrup", "ORS", "Zinc syrup", "Cetirizine syrup", "Domperidone syrup"],
+  frequency: ["SOS (as needed)", "Before food", "After food", "At bedtime", "Every 6 hours", "Every 8 hours", "Every 12 hours"],
   instruction: ["Plenty of fluids", "Adequate rest", "Avoid oily food", "Steam inhalation", "Complete the full course"],
 };
 const frequencyOptions = [
   { key: "1", label: "Once a day (OD)" }, { key: "2", label: "Twice a day (BD)" },
-  { key: "3", label: "Thrice a day (TDS)" }, { key: "4", label: "4 times a day (QID)" }, { key: "SOS", label: "SOS (as needed)" },
+  { key: "3", label: "Thrice a day (TDS)" }, { key: "4", label: "4 times a day (QID)" },
 ];
+const customFrequencyKey = "CUSTOM";
 
 function parseListForCopy(str) {
   if (!str) return [];
@@ -2432,7 +2434,8 @@ function parseMedicationsForCopy(meds) {
   if (!meds || !meds.length) return [];
   return meds.map((m) => ({
     name: m.name, dosage: m.dosage || "",
-    frequency: frequencyOptions.find((f) => f.label === m.frequency)?.key || "1",
+    frequency: frequencyOptions.find((f) => f.label === m.frequency)?.key || (m.frequency ? customFrequencyKey : "1"),
+    customFrequency: frequencyOptions.some((f) => f.label === m.frequency) ? "" : (m.frequency || ""),
     durationDays: m.days || "", remark: m.remark || "",
   }));
 }
@@ -2447,6 +2450,7 @@ function NewConsultationForm({ patient, session, onCancel, onSave, copyFrom, doc
   const [medications, setMedications] = useState(() => (copyFrom ? parseMedicationsForCopy(copyFrom.medications) : []));
   const [instructions, setInstructions] = useState(() => (copyFrom ? parseListForCopy(copyFrom.instructions) : []));
   const [panelName, setPanelName] = useState("");
+  const [panelTests, setPanelTests] = useState([]);
   const [followUps, setFollowUps] = useState(() => {
     if (!copyFrom?.followUp) return [];
     return copyFrom.followUp.split(" | ").map((x) => { const [date, ...reason] = x.split(" — "); return { date: date || "", reason: reason.join(" — ") }; });
@@ -2475,7 +2479,7 @@ function NewConsultationForm({ patient, session, onCancel, onSave, copyFrom, doc
       bookedDoctor, consultingDoctor: session.name, consultingDoctorId: session.username,
       complaints: complaints.map((c) => c.manualDuration ? `${c.name} (${c.manualDuration})` : c.durationValue ? `${c.name} (${c.durationValue} ${c.durationUnit})` : c.name).join(", "),
       findings: findings.join(", "), diagnosis: diagnoses.join(", "),
-      medications: medications.map((m) => ({ name: m.name, dosage: m.dosage || "", frequency: frequencyOptions.find((f) => f.key === m.frequency)?.label || m.frequency, days: m.durationDays, remark: m.remark || "" })),
+      medications: medications.map((m) => ({ name: m.name, dosage: m.dosage || "", frequency: m.frequency === customFrequencyKey ? (m.customFrequency || "Custom frequency") : (frequencyOptions.find((f) => f.key === m.frequency)?.label || m.frequency), days: m.durationDays, remark: m.remark || "" })),
       investigations: investigations.join(", "), instructions: instructions.join(", "),
       followUp: followUps.map((f) => `${f.date}${f.reason ? ` — ${f.reason}` : ""}`).join(" | "),
     };
@@ -2538,23 +2542,28 @@ function NewConsultationForm({ patient, session, onCancel, onSave, copyFrom, doc
 
         <FieldBlock icon={<FlaskConical size={14} />} label="Investigations advised">
           {(lists.investigationPanels || []).length > 0 && (
-            <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 8 }}>
-              {(lists.investigationPanels || []).map((panel) => (
-                <button key={panel.name} type="button" style={consultStyles.freqChip} onClick={() => setInvestigations((p) => [...p, ...panel.tests.filter((t) => !p.includes(t))])}>{panel.name}</button>
-              ))}
+            <div style={consultStyles.panelList}>
+              <div style={consultStyles.panelHint}>Saved panels</div>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                {(lists.investigationPanels || []).map((panel) => (
+                  <button key={panel.name} type="button" style={consultStyles.freqChip} onClick={() => setInvestigations((p) => [...p, ...(panel.tests || []).filter((t) => !p.includes(t))])} title={(panel.tests || []).join(", ")}>{panel.name}</button>
+                ))}
+              </div>
             </div>
           )}
           <Autocomplete options={lists.investigation || []} excluded={investigations} placeholder="Type to search or add investigation…" onSelect={(name) => setInvestigations((p) => [...p, name])} onAddNew={(name) => { addToMasterList("investigation", name); setInvestigations((p) => [...p, name]); }} />
           <TagList items={investigations} onRemove={(name) => setInvestigations((p) => p.filter((d) => d !== name))} />
-          <div style={{ display: "flex", gap: 8, marginTop: 8, alignItems: "center" }}>
-            <input value={panelName} onChange={(e) => setPanelName(e.target.value)} placeholder="Save selected tests as panel" style={{ ...consultStyles.input, flex: 1 }} />
-            <button type="button" style={consultStyles.freqChip} onClick={() => {
-              const name = panelName.trim(); if (!name || !investigations.length) return;
-              const next = [...(lists.investigationPanels || []), { name, tests: investigations }];
-              setQuickPickLists?.((prev) => ({ ...prev, investigationPanels: next }));
-              supabase.from("quick_pick_lists").upsert({ field: "investigationPanels", items: next }, { onConflict: "field" }).then(({ error }) => { if (error) console.error("Failed to save investigation panel", error); });
-              setPanelName("");
-            }}>Save panel</button>
+          <div style={consultStyles.panelBuilder}>
+            <div style={consultStyles.panelTitle}>Create investigation panel</div>
+            <input value={panelName} onChange={(e) => setPanelName(e.target.value)} placeholder="Panel name e.g. Fever panel" style={consultStyles.input} />
+            <div style={consultStyles.panelHint}>Select tests to include in this panel</div>
+            <div style={consultStyles.panelTestList}>
+              {(lists.investigation || []).map((test) => { const selected = panelTests.includes(test); return <button key={test} type="button" onClick={() => setPanelTests((p) => selected ? p.filter((x) => x !== test) : [...p, test])} style={{ ...consultStyles.freqChip, ...(selected ? consultStyles.freqChipActive : {}) }}>{test}</button>; })}
+            </div>
+            <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+              <button type="button" style={consultStyles.freqChip} onClick={() => { setPanelName(""); setPanelTests([]); }}>Clear</button>
+              <button type="button" style={{ ...consultStyles.freqChip, ...consultStyles.freqChipActive }} onClick={() => { const name = panelName.trim(); const tests = [...new Set(panelTests.map((t) => t.trim()).filter(Boolean))]; if (!name || !tests.length) return; const existing = lists.investigationPanels || []; const next = [...existing.filter((p) => p.name.toLowerCase() !== name.toLowerCase()), { name, tests }]; setQuickPickLists?.((prev) => ({ ...prev, investigationPanels: next })); supabase.from("quick_pick_lists").upsert({ field: "investigationPanels", items: next }, { onConflict: "field" }).then(({ error }) => { if (error) console.error("Failed to save investigation panel", error); }); setPanelName(""); setPanelTests([]); }}>Save panel</button>
+            </div>
           </div>
         </FieldBlock>
 
@@ -2566,10 +2575,11 @@ function NewConsultationForm({ patient, session, onCancel, onSave, copyFrom, doc
             {medications.map((m, i) => (
               <div key={i} style={consultStyles.medicationCard}>
                 <div style={consultStyles.medicationTopRow}><span style={consultStyles.complaintName}>{m.name}</span><button type="button" onClick={() => setMedications((p) => p.filter((_, xi) => xi !== i))} style={consultStyles.removeRowBtn}><X size={13} /></button></div>
-                <div style={consultStyles.freqChipRow}>{frequencyOptions.map((f) => <button key={f.key} type="button" onClick={() => setMedications((p) => p.map((x, xi) => (xi === i ? { ...x, frequency: f.key } : x)))} style={{ ...consultStyles.freqChip, ...(m.frequency === f.key ? consultStyles.freqChipActive : {}) }}>{f.label}</button>)}</div>
+                <div style={consultStyles.freqChipRow}>{frequencyOptions.map((f) => <button key={f.key} type="button" onClick={() => setMedications((p) => p.map((x, xi) => (xi === i ? { ...x, frequency: f.key, customFrequency: "" } : x)))} style={{ ...consultStyles.freqChip, ...(m.frequency === f.key ? consultStyles.freqChipActive : {}) }}>{f.label}</button>)}<button type="button" onClick={() => setMedications((p) => p.map((x, xi) => (xi === i ? { ...x, frequency: customFrequencyKey } : x)))} style={{ ...consultStyles.freqChip, ...(m.frequency === customFrequencyKey ? consultStyles.freqChipActive : {}) }}>Other / Custom</button></div>
+                {m.frequency === customFrequencyKey && <Autocomplete options={lists.frequency || []} excluded={[]} placeholder="Type or select frequency (reusable)…" onSelect={(value) => setMedications((p) => p.map((x, xi) => (xi === i ? { ...x, customFrequency: value } : x)))} onAddNew={(value) => { addToMasterList("frequency", value); setMedications((p) => p.map((x, xi) => (xi === i ? { ...x, customFrequency: value } : x))); }} />}
                 <div style={consultStyles.medExtraRow}>
                   <input value={m.dosage || ""} onChange={(e) => setMedications((p) => p.map((x, xi) => (xi === i ? { ...x, dosage: e.target.value } : x)))} placeholder="Amount e.g. 5ml, 1 tab" style={consultStyles.medExtraInput} />
-                  {m.frequency !== "SOS" && <><span style={consultStyles.forLabel}>for</span><input type="number" min="0" value={m.durationDays} onChange={(e) => setMedications((p) => p.map((x, xi) => (xi === i ? { ...x, durationDays: e.target.value } : x)))} placeholder="e.g. 5" style={consultStyles.durationNumInput} /><span style={consultStyles.forLabel}>days</span></>}
+                  {!(m.frequency === customFrequencyKey && m.customFrequency === "SOS (as needed)") && <><span style={consultStyles.forLabel}>for</span><input type="number" min="0" value={m.durationDays} onChange={(e) => setMedications((p) => p.map((x, xi) => (xi === i ? { ...x, durationDays: e.target.value } : x)))} placeholder="e.g. 5" style={consultStyles.durationNumInput} /><span style={consultStyles.forLabel}>days</span></>}
                 </div>
                 <input value={m.remark || ""} onChange={(e) => setMedications((p) => p.map((x, xi) => (xi === i ? { ...x, remark: e.target.value } : x)))} placeholder="Remark e.g. After food, At bedtime" style={{ ...consultStyles.medExtraInput, width: "100%", marginTop: 6, boxSizing: "border-box" }} />
               </div>
@@ -2659,6 +2669,11 @@ const consultStyles = {
   freqChipRow: { display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 8 },
   freqChip: { fontSize: 11.5, fontWeight: 600, color: "#5B635F", background: "#fff", border: "1px solid #DCD9D0", borderRadius: 20, padding: "5px 10px", cursor: "pointer" },
   freqChipActive: { background: "#0B3B36", border: "1px solid #0B3B36", color: "#fff" },
+  panelBuilder: { marginTop: 12, padding: 10, background: "#F6F5F1", border: "1px solid #EEECE5", borderRadius: 10 },
+  panelTitle: { fontSize: 12.5, fontWeight: 700, color: "#3C4441", marginBottom: 8 },
+  panelHint: { fontSize: 11.5, color: "#66706C", margin: "8px 0 6px" },
+  panelList: { marginBottom: 8 },
+  panelTestList: { display: "flex", flexWrap: "wrap", gap: 6, maxHeight: 150, overflowY: "auto", paddingRight: 2 },
   durationForRow: { display: "flex", alignItems: "center", gap: 8 },
   medExtraRow: { display: "flex", alignItems: "center", gap: 8, marginTop: 6 },
   medExtraInput: { fontSize: 12.5, padding: "6px 9px", borderRadius: 6, border: "1px solid #DCD9D0", fontFamily: "inherit", boxSizing: "border-box", flex: 1 },
