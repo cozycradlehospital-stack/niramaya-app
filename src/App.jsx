@@ -224,7 +224,7 @@ export default function App() {
     ]);
     if (roomsRes.data) setRooms(roomsRes.data.map(roomFromDb));
     if (clinicRes.data) setClinicDetails(clinicDetailsFromDb(clinicRes.data));
-    if (listsRes.data) setQuickPickLists(Object.fromEntries(listsRes.data.map((r) => [r.field, r.items])));
+    if (listsRes.data) setQuickPickLists({ ...initialLists, ...Object.fromEntries(listsRes.data.map((r) => [r.field, r.items])) });
     if (typesRes.data) setAppointmentTypes(typesRes.data.map((r) => r.name));
     if (printRes.data) setPrintSettings(printSettingsFromDb(printRes.data));
   }
@@ -2399,8 +2399,10 @@ function InfoRow({ icon, label, value }) {
    ========================================================================== */
 const initialLists = {
   complaint: ["Fever", "Fatigue", "Cough", "Cold", "Vomiting", "Loose motions", "Abdominal pain", "Poor feeding", "Rash"],
+  finding: ["Throat congested", "Chest clear", "Bilateral crepitations", "Dehydration", "Abdomen soft", "Rash present"],
   diagnosis: ["Viral fever", "URTI", "Acute gastroenteritis", "Bronchiolitis", "Teething", "Routine check-up"],
   investigation: ["CBC", "CRP", "Urine routine", "Chest X-ray", "Blood culture", "Stool routine", "Dengue NS1"],
+  investigationPanels: [],
   medication: ["Paracetamol syrup", "Amoxicillin syrup", "ORS", "Zinc syrup", "Cetirizine syrup", "Domperidone syrup"],
   instruction: ["Plenty of fluids", "Adequate rest", "Avoid oily food", "Steam inhalation", "Complete the full course"],
 };
@@ -2439,31 +2441,31 @@ function NewConsultationForm({ patient, session, onCancel, onSave, copyFrom, doc
   const lists = quickPickLists || initialLists;
   const [bookedDoctor, setBookedDoctor] = useState(session.name);
   const [complaints, setComplaints] = useState(() => (copyFrom ? parseComplaintsForCopy(copyFrom.complaints) : []));
+  const [findings, setFindings] = useState(() => (copyFrom ? parseListForCopy(copyFrom.findings) : []));
   const [diagnoses, setDiagnoses] = useState(() => (copyFrom ? parseListForCopy(copyFrom.diagnosis) : []));
   const [investigations, setInvestigations] = useState(() => (copyFrom ? parseListForCopy(copyFrom.investigations) : []));
   const [medications, setMedications] = useState(() => (copyFrom ? parseMedicationsForCopy(copyFrom.medications) : []));
   const [instructions, setInstructions] = useState(() => (copyFrom ? parseListForCopy(copyFrom.instructions) : []));
-  const [findings, setFindings] = useState(copyFrom?.findings || "");
+  const [panelName, setPanelName] = useState("");
+  const [followUps, setFollowUps] = useState(() => {
+    if (!copyFrom?.followUp) return [];
+    return copyFrom.followUp.split(" | ").map((x) => { const [date, ...reason] = x.split(" — "); return { date: date || "", reason: reason.join(" — ") }; });
+  });
   const [followUpDate, setFollowUpDate] = useState("");
   const [followUpReason, setFollowUpReason] = useState("");
 
   const crossCoverage = bookedDoctor !== session.name;
 
   function addToMasterList(field, value) {
-    if (setQuickPickLists) {
-      let wasNew = false;
-      setQuickPickLists((prev) => {
-        if (prev[field].some((o) => o.toLowerCase() === value.toLowerCase())) return prev;
-        wasNew = true;
-        return { ...prev, [field]: [...prev[field], value] };
-      });
-      if (wasNew) {
-        supabase.from("quick_pick_lists").select("items").eq("field", field).single().then(({ data }) => {
-          const items = data?.items?.some((o) => o.toLowerCase() === value.toLowerCase()) ? data.items : [...(data?.items || []), value];
-          supabase.from("quick_pick_lists").update({ items }).eq("field", field).then(({ error }) => { if (error) console.error("Failed to save quick-pick item", error); });
-        });
-      }
-    }
+    const cleanValue = value.trim();
+    if (!cleanValue || !setQuickPickLists) return;
+    const exists = (lists[field] || []).some((o) => o.toLowerCase() === cleanValue.toLowerCase());
+    if (exists) return;
+    setQuickPickLists((prev) => ({ ...prev, [field]: [...(prev[field] || []), cleanValue] }));
+    supabase.from("quick_pick_lists").select("items").eq("field", field).maybeSingle().then(({ data }) => {
+      const items = data?.items?.some((o) => o.toLowerCase() === cleanValue.toLowerCase()) ? data.items : [...(data?.items || []), cleanValue];
+      supabase.from("quick_pick_lists").upsert({ field, items }, { onConflict: "field" }).then(({ error }) => { if (error) console.error("Failed to save quick-pick item", error); });
+    });
   }
 
   function handleSave() {
@@ -2472,10 +2474,10 @@ function NewConsultationForm({ patient, session, onCancel, onSave, copyFrom, doc
       createdAt: new Date().toISOString(),
       bookedDoctor, consultingDoctor: session.name, consultingDoctorId: session.username,
       complaints: complaints.map((c) => c.manualDuration ? `${c.name} (${c.manualDuration})` : c.durationValue ? `${c.name} (${c.durationValue} ${c.durationUnit})` : c.name).join(", "),
-      findings, diagnosis: diagnoses.join(", "),
+      findings: findings.join(", "), diagnosis: diagnoses.join(", "),
       medications: medications.map((m) => ({ name: m.name, dosage: m.dosage || "", frequency: frequencyOptions.find((f) => f.key === m.frequency)?.label || m.frequency, days: m.durationDays, remark: m.remark || "" })),
       investigations: investigations.join(", "), instructions: instructions.join(", "),
-      followUp: followUpDate ? `${followUpDate}${followUpReason ? ` — ${followUpReason}` : ""}` : "",
+      followUp: followUps.map((f) => `${f.date}${f.reason ? ` — ${f.reason}` : ""}`).join(" | "),
     };
     onSave(record);
   }
@@ -2523,7 +2525,10 @@ function NewConsultationForm({ patient, session, onCancel, onSave, copyFrom, doc
         </FieldBlock>
 
         <FieldBlock icon={<ClipboardList size={14} />} label="Findings (on examination)">
-          <textarea style={{ ...consultStyles.input, minHeight: 60, resize: "vertical", fontFamily: "inherit" }} value={findings} onChange={(e) => setFindings(e.target.value)} placeholder="e.g. Throat congested" />
+          <Autocomplete options={lists.finding || []} excluded={findings} placeholder="Type to search or add…"
+            onSelect={(name) => setFindings((p) => [...p, name])}
+            onAddNew={(name) => { addToMasterList("finding", name); setFindings((p) => [...p, name]); }} />
+          <TagList items={findings} onRemove={(name) => setFindings((p) => p.filter((d) => d !== name))} />
         </FieldBlock>
 
         <FieldBlock icon={<ClipboardList size={14} />} label="Diagnosis">
@@ -2532,8 +2537,25 @@ function NewConsultationForm({ patient, session, onCancel, onSave, copyFrom, doc
         </FieldBlock>
 
         <FieldBlock icon={<FlaskConical size={14} />} label="Investigations advised">
-          <Autocomplete options={lists.investigation} excluded={investigations} placeholder="Type to search or add…" onSelect={(name) => setInvestigations((p) => [...p, name])} onAddNew={(name) => { addToMasterList("investigation", name); setInvestigations((p) => [...p, name]); }} />
+          {(lists.investigationPanels || []).length > 0 && (
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 8 }}>
+              {(lists.investigationPanels || []).map((panel) => (
+                <button key={panel.name} type="button" style={consultStyles.freqChip} onClick={() => setInvestigations((p) => [...p, ...panel.tests.filter((t) => !p.includes(t))])}>{panel.name}</button>
+              ))}
+            </div>
+          )}
+          <Autocomplete options={lists.investigation || []} excluded={investigations} placeholder="Type to search or add investigation…" onSelect={(name) => setInvestigations((p) => [...p, name])} onAddNew={(name) => { addToMasterList("investigation", name); setInvestigations((p) => [...p, name]); }} />
           <TagList items={investigations} onRemove={(name) => setInvestigations((p) => p.filter((d) => d !== name))} />
+          <div style={{ display: "flex", gap: 8, marginTop: 8, alignItems: "center" }}>
+            <input value={panelName} onChange={(e) => setPanelName(e.target.value)} placeholder="Save selected tests as panel" style={{ ...consultStyles.input, flex: 1 }} />
+            <button type="button" style={consultStyles.freqChip} onClick={() => {
+              const name = panelName.trim(); if (!name || !investigations.length) return;
+              const next = [...(lists.investigationPanels || []), { name, tests: investigations }];
+              setQuickPickLists?.((prev) => ({ ...prev, investigationPanels: next }));
+              supabase.from("quick_pick_lists").upsert({ field: "investigationPanels", items: next }, { onConflict: "field" }).then(({ error }) => { if (error) console.error("Failed to save investigation panel", error); });
+              setPanelName("");
+            }}>Save panel</button>
+          </div>
         </FieldBlock>
 
         <FieldBlock icon={<Pill size={14} />} label="Medications">
@@ -2560,11 +2582,13 @@ function NewConsultationForm({ patient, session, onCancel, onSave, copyFrom, doc
           <TagList items={instructions} onRemove={(name) => setInstructions((p) => p.filter((d) => d !== name))} />
         </FieldBlock>
 
-        <FieldBlock icon={<Calendar size={14} />} label="Follow-up">
+        <FieldBlock icon={<Calendar size={14} />} label="Follow-up dates">
           <div style={consultStyles.followUpRow}>
             <input style={{ ...consultStyles.input, maxWidth: 170 }} type="date" value={followUpDate} onChange={(e) => setFollowUpDate(e.target.value)} />
-            <input style={consultStyles.input} value={followUpReason} onChange={(e) => setFollowUpReason(e.target.value)} placeholder="Reason (e.g. Review after 3 days)" />
+            <input style={consultStyles.input} value={followUpReason} onChange={(e) => setFollowUpReason(e.target.value)} placeholder="Reason (optional)" />
+            <button type="button" style={consultStyles.freqChip} onClick={() => { if (!followUpDate) return; setFollowUps((p) => [...p, { date: followUpDate, reason: followUpReason }]); setFollowUpDate(""); setFollowUpReason(""); }}>Add date</button>
           </div>
+          {followUps.map((f, i) => <div key={`${f.date}-${i}`} style={{ ...consultStyles.complaintRow, marginTop: 6 }}><span style={consultStyles.complaintName}>{f.date}</span><span style={{ fontSize: 12, color: "#66706C", flex: 1 }}>{f.reason || "Follow-up"}</span><button type="button" onClick={() => setFollowUps((p) => p.filter((_, xi) => xi !== i))} style={consultStyles.removeRowBtn}><X size={13} /></button></div>)}
         </FieldBlock>
 
         <button style={consultStyles.saveBtn} onClick={handleSave}>Save consultation</button>
