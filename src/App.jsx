@@ -1545,7 +1545,8 @@ function RoomsAndVaccinesSection({ vaccinationRecords, allPatients, rooms }) {
   const occupiedCount = roomList.filter((r) => r.status === "occupied").length;
 
   const vaccinesDue = useMemo(() => {
-    const results = [];
+    const grouped = [];
+    const byPatient = new Map();
     const records = vaccinationRecords || {};
     const patients = allPatients || [];
     for (const p of patients) {
@@ -1556,8 +1557,13 @@ function RoomsAndVaccinesSection({ vaccinationRecords, allPatients, rooms }) {
         const days = vaccineDaysFromToday(v.due);
         // Show overdue, due today, and upcoming vaccines from 7 days before the due date.
         if (days !== null && days <= 7) {
-          results.push({
-            patient: p.name, id: p.id, phone: p.phone,
+          let group = byPatient.get(p.id);
+          if (!group) {
+            group = { patient: p.name, id: p.id, phone: p.phone, vaccines: [] };
+            byPatient.set(p.id, group);
+            grouped.push(group);
+          }
+          group.vaccines.push({
             vaccine: v.name + (v.dose ? ` (${v.dose})` : ""),
             due: v.due,
             days,
@@ -1566,8 +1572,15 @@ function RoomsAndVaccinesSection({ vaccinationRecords, allPatients, rooms }) {
         }
       }
     }
-    results.sort((a, b) => a.days - b.days || a.patient.localeCompare(b.patient));
-    return results;
+    for (const group of grouped) {
+      group.vaccines.sort((a, b) => a.days - b.days || a.vaccine.localeCompare(b.vaccine));
+    }
+    grouped.sort((a, b) => {
+      const aDays = a.vaccines[0]?.days ?? 0;
+      const bDays = b.vaccines[0]?.days ?? 0;
+      return aDays - bDays || a.patient.localeCompare(b.patient);
+    });
+    return grouped;
   }, [vaccinationRecords, allPatients]);
 
   return (
