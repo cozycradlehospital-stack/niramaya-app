@@ -1598,7 +1598,7 @@ function RoomsAndVaccinesSection({ vaccinationRecords, allPatients, rooms }) {
 
       <div style={rvStyles.statsRow}>
         {showRooms && <div style={rvStyles.statCard}><div style={rvStyles.statIcon}><BedDouble size={17} color="#0B3B36" /></div><div><div style={rvStyles.statValue}>{occupiedCount} / {roomList.length}</div><div style={rvStyles.statLabel}>Rooms occupied</div></div></div>}
-        {showVaccines && <div style={rvStyles.statCard}><div style={rvStyles.statIcon}><Syringe size={17} color="#B7791F" /></div><div><div style={rvStyles.statValue}>{vaccinesDue.length}</div><div style={rvStyles.statLabel}>Vaccines due</div></div></div>}
+        {showVaccines && <div style={rvStyles.statCard}><div style={rvStyles.statIcon}><Syringe size={17} color="#B7791F" /></div><div><div style={rvStyles.statValue}>{vaccinesDue.reduce((total, p) => total + p.vaccines.length, 0)}</div><div style={rvStyles.statLabel}>Vaccines due</div></div></div>}
       </div>
 
       {showRooms && (
@@ -1619,14 +1619,18 @@ function RoomsAndVaccinesSection({ vaccinationRecords, allPatients, rooms }) {
           <div style={rvStyles.vaxHeading}>Vaccines due / overdue</div>
           <div style={rvStyles.vaxDueList}>
             {vaccinesDue.length === 0 && <div style={rvStyles.emptyVaxNote}>No vaccines due yet — due dates are set by a doctor from each patient's profile.</div>}
-            {vaccinesDue.map((v, i) => (
-              <div key={i} style={rvStyles.vaxDueRow}>
+            {vaccinesDue.map((p) => (
+              <div key={p.id} style={rvStyles.vaxDueRow}>
                 <AlertCircle size={15} color="#B7791F" style={{ flexShrink: 0 }} />
                 <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={rvStyles.vaxDuePatient}>{v.patient} <span style={rvStyles.miniId}>{v.id}</span></div>
-                  <div style={rvStyles.vaxDueMeta}>{v.vaccine} · {v.status}</div>
+                  <div style={rvStyles.vaxDuePatient}>{p.patient} <span style={rvStyles.miniId}>{p.id}</span></div>
+                  <div style={{ display: "flex", flexDirection: "column", gap: 4, marginTop: 5 }}>
+                    {p.vaccines.map((v, i) => (
+                      <div key={i} style={rvStyles.vaxDueMeta}>{v.vaccine} · {v.status}</div>
+                    ))}
+                  </div>
                 </div>
-                <div style={rvStyles.vaxDuePhone}><Phone size={11} style={{ marginRight: 4 }} />{v.phone}</div>
+                <div style={rvStyles.vaxDuePhone}><Phone size={11} style={{ marginRight: 4 }} />{p.phone}</div>
               </div>
             ))}
           </div>
