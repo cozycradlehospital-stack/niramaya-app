@@ -343,41 +343,44 @@ function Shell({ session, onLogout, accounts, setAccounts, refreshAccounts, room
   const [allPatients, setAllPatients] = useState([]);
   const backupData = { allPatients, appointments, vaccinationRecords, vitalsRecords, patientHistoryRecords, accounts, rooms, clinicDetails, appointmentTypes, printSettings };
 
-  // One-time load of every clinical record on login. All of patients/appointments/
-  // vitals/consultations/vaccination schedules are fetched together here; every
-  // mutation elsewhere in Shell writes straight back to Supabase (optimistic local
-  // update + real write), so this fetch only needs to run once per session.
+  // Single clinic-data refresh used both on first load and by every Refresh button.
+  // This intentionally reloads patients too, so a patient created from another login
+  // appears immediately without a full browser reload.
+  async function refreshClinicData({ initial = false } = {}) {
+    if (initial) setDataLoaded(false);
+    const [patientsRes, apptsRes, vitalsRes, consultRes, vaxRes] = await Promise.all([
+      supabase.from("patients").select("*"),
+      supabase.from("appointments").select("*"),
+      supabase.from("vitals").select("*"),
+      supabase.from("consultations").select("*"),
+      supabase.from("vaccination_records").select("*"),
+    ]);
+    const firstError = [patientsRes, apptsRes, vitalsRes, consultRes, vaxRes].map((r) => r.error).find(Boolean);
+    if (firstError) throw firstError;
+    setAllPatients((patientsRes.data || []).map(patientFromDb));
+    setAppointments((apptsRes.data || []).map(appointmentFromDb));
+    const groupedVitals = groupByPatient(vitalsRes.data || [], vitalsFromDb, "dateISO");
+    Object.keys(groupedVitals).forEach((pid) => {
+      const byDate = new Map();
+      groupedVitals[pid].forEach((v) => {
+        const key = v.dateLabel || indiaDateLabel(new Date(v.dateISO));
+        const current = byDate.get(key);
+        if (!current || new Date(v.dateISO) >= new Date(current.dateISO)) byDate.set(key, v);
+      });
+      groupedVitals[pid] = [...byDate.values()].sort((a,b) => new Date(b.dateISO) - new Date(a.dateISO));
+    });
+    setVitalsRecords(groupedVitals);
+    setPatientHistoryRecords(groupByPatient(consultRes.data || [], consultationFromDb, null));
+    setVaccinationRecords(Object.fromEntries((vaxRes.data || []).map((r) => [r.patient_id, r.schedule])));
+    setDataLoaded(true);
+    return true;
+  }
+
   useEffect(() => {
     let cancelled = false;
-    async function loadAll() {
-      const [patientsRes, apptsRes, vitalsRes, consultRes, vaxRes] = await Promise.all([
-        supabase.from("patients").select("*"),
-        supabase.from("appointments").select("*"),
-        supabase.from("vitals").select("*"),
-        supabase.from("consultations").select("*"),
-        supabase.from("vaccination_records").select("*"),
-      ]);
-      if (cancelled) return;
-      if (patientsRes.data) setAllPatients(patientsRes.data.map(patientFromDb));
-      if (apptsRes.data) setAppointments(apptsRes.data.map(appointmentFromDb));
-      if (vitalsRes.data) {
-        const groupedVitals = groupByPatient(vitalsRes.data, vitalsFromDb, "dateISO");
-        Object.keys(groupedVitals).forEach((pid) => {
-          const byDate = new Map();
-          groupedVitals[pid].forEach((v) => {
-            const key = v.dateLabel || indiaDateLabel(new Date(v.dateISO));
-            const current = byDate.get(key);
-            if (!current || new Date(v.dateISO) >= new Date(current.dateISO)) byDate.set(key, v);
-          });
-          groupedVitals[pid] = [...byDate.values()].sort((a,b) => new Date(b.dateISO) - new Date(a.dateISO));
-        });
-        setVitalsRecords(groupedVitals);
-      }
-      if (consultRes.data) setPatientHistoryRecords(groupByPatient(consultRes.data, consultationFromDb, null));
-      if (vaxRes.data) setVaccinationRecords(Object.fromEntries(vaxRes.data.map((r) => [r.patient_id, r.schedule])));
-      setDataLoaded(true);
-    }
-    loadAll();
+    refreshClinicData({ initial: true }).catch((error) => {
+      if (!cancelled) { console.error("Initial clinic data load failed", error); setDataLoaded(true); }
+    });
     return () => { cancelled = true; };
   }, []);
 
@@ -430,12 +433,12 @@ function Shell({ session, onLogout, accounts, setAccounts, refreshAccounts, room
           />
         ) : activeTab === "dashboard" ? (
           session.role === "receptionist"
-            ? <ReceptionDashboardScreen onSelectPatient={openPatient} allPatients={allPatients} appointments={appointments} setAppointments={setAppointments} vaccinationRecords={vaccinationRecords} setVitalsRecords={setVitalsRecords} rooms={rooms} session={session} patientHistoryRecords={patientHistoryRecords} setPatientHistoryRecords={setPatientHistoryRecords} doctorNames={doctorNames} />
-            : <DoctorDashboardScreen onSelectPatient={openPatient} allPatients={allPatients} session={session} vaccinationRecords={vaccinationRecords} rooms={rooms} appointments={appointments} setAppointments={setAppointments} patientHistoryRecords={patientHistoryRecords} setPatientHistoryRecords={setPatientHistoryRecords} />
+            ? <ReceptionDashboardScreen onSelectPatient={openPatient} allPatients={allPatients} appointments={appointments} setAppointments={setAppointments} vaccinationRecords={vaccinationRecords} setVitalsRecords={setVitalsRecords} rooms={rooms} session={session} patientHistoryRecords={patientHistoryRecords} setPatientHistoryRecords={setPatientHistoryRecords} doctorNames={doctorNames} onRefreshData={refreshClinicData} />
+            : <DoctorDashboardScreen onSelectPatient={openPatient} allPatients={allPatients} session={session} vaccinationRecords={vaccinationRecords} rooms={rooms} appointments={appointments} setAppointments={setAppointments} patientHistoryRecords={patientHistoryRecords} setPatientHistoryRecords={setPatientHistoryRecords} onRefreshData={refreshClinicData} />
         ) : activeTab === "patients" ? (
           <PatientsTab onSelectPatient={openPatient} patients={allPatients} onAddPatient={addPatient} />
         ) : activeTab === "appointments" ? (
-          <AppointmentBookingScreen allPatients={allPatients} appointments={appointments} setAppointments={setAppointments} doctorNames={doctorNames} appointmentTypes={appointmentTypes} patientHistoryRecords={patientHistoryRecords} setPatientHistoryRecords={setPatientHistoryRecords} />
+          <AppointmentBookingScreen allPatients={allPatients} appointments={appointments} setAppointments={setAppointments} doctorNames={doctorNames} appointmentTypes={appointmentTypes} patientHistoryRecords={patientHistoryRecords} setPatientHistoryRecords={setPatientHistoryRecords} onRefreshData={refreshClinicData} />
         ) : activeTab === "ipd" ? (
           <IPDRoomDashboardScreen allPatients={allPatients} rooms={rooms} setRooms={setRooms} isAdmin={session.role === "admin"} setPatientHistoryRecords={setPatientHistoryRecords} doctorNames={doctorNames} />
         ) : activeTab === "settings" && session.role === "admin" ? (
@@ -476,21 +479,33 @@ function ComingSoon({ tabKey, navItems }) {
 
 const searchTabs = [{ key: "name", label: "Name" }, { key: "phone", label: "Phone" }, { key: "id", label: "ID" }, { key: "dob", label: "DOB" }];
 
-function DoctorDashboardScreen({ onSelectPatient, allPatients, session, vaccinationRecords, rooms, appointments, setAppointments, patientHistoryRecords, setPatientHistoryRecords }) {
+function DoctorDashboardScreen({ onSelectPatient, allPatients, session, vaccinationRecords, rooms, appointments, setAppointments, patientHistoryRecords, setPatientHistoryRecords, onRefreshData }) {
   const [searchTab, setSearchTab] = useState("name");
   const [query, setQuery] = useState("");
   const [rowTab, setRowTab] = useState("live");
   const [refreshing, setRefreshing] = useState(false);
 
   async function handleRefresh() {
+    if (refreshing) return;
     setRefreshing(true);
-    const [apptsRes, consultRes] = await Promise.all([
-      supabase.from("appointments").select("*"),
-      supabase.from("consultations").select("*"),
-    ]);
-    if (apptsRes.data) setAppointments(apptsRes.data.map(appointmentFromDb));
-    if (consultRes.data && setPatientHistoryRecords) setPatientHistoryRecords(groupByPatient(consultRes.data, consultationFromDb, null));
-    setRefreshing(false);
+    try {
+      if (onRefreshData) await onRefreshData();
+      else {
+        const [apptsRes, consultRes] = await Promise.all([
+          supabase.from("appointments").select("*"),
+          supabase.from("consultations").select("*"),
+        ]);
+        if (apptsRes.error) throw apptsRes.error;
+        if (consultRes.error) throw consultRes.error;
+        setAppointments((apptsRes.data || []).map(appointmentFromDb));
+        if (setPatientHistoryRecords) setPatientHistoryRecords(groupByPatient(consultRes.data || [], consultationFromDb, null));
+      }
+    } catch (error) {
+      console.error("Refresh failed", error);
+      window.alert(`Refresh failed: ${error?.message || "Please check your connection and database permissions."}`);
+    } finally {
+      setRefreshing(false);
+    }
   }
 
   function matches(p) {
@@ -667,7 +682,7 @@ const ddStyles = {
    ========================================================================== */
 function todayAt(hour, minute) { const d = indiaNow(); d.setHours(hour, minute, 0, 0); return d; }
 
-function ReceptionDashboardScreen({ onSelectPatient, allPatients, appointments, setAppointments, vaccinationRecords, setVitalsRecords, rooms, session, patientHistoryRecords, setPatientHistoryRecords, doctorNames = [] }) {
+function ReceptionDashboardScreen({ onSelectPatient, allPatients, appointments, setAppointments, vaccinationRecords, setVitalsRecords, rooms, session, patientHistoryRecords, setPatientHistoryRecords, doctorNames = [], onRefreshData }) {
   const [checkInFor, setCheckInFor] = useState(null);
   const [entryPickerType, setEntryPickerType] = useState(null);
   const [selectedDate, setSelectedDate] = useState(todayISO());
@@ -679,14 +694,26 @@ function ReceptionDashboardScreen({ onSelectPatient, allPatients, appointments, 
   // a doctor finishing a consultation) — this pulls the latest appointments + today's
   // consultations so this screen reflects that without needing a full page reload.
   async function handleRefresh() {
+    if (refreshing) return;
     setRefreshing(true);
-    const [apptsRes, consultRes] = await Promise.all([
-      supabase.from("appointments").select("*"),
-      supabase.from("consultations").select("*"),
-    ]);
-    if (apptsRes.data) setAppointments(apptsRes.data.map(appointmentFromDb));
-    if (consultRes.data && setPatientHistoryRecords) setPatientHistoryRecords(groupByPatient(consultRes.data, consultationFromDb, null));
-    setRefreshing(false);
+    try {
+      if (onRefreshData) await onRefreshData();
+      else {
+        const [apptsRes, consultRes] = await Promise.all([
+          supabase.from("appointments").select("*"),
+          supabase.from("consultations").select("*"),
+        ]);
+        if (apptsRes.error) throw apptsRes.error;
+        if (consultRes.error) throw consultRes.error;
+        setAppointments((apptsRes.data || []).map(appointmentFromDb));
+        if (setPatientHistoryRecords) setPatientHistoryRecords(groupByPatient(consultRes.data || [], consultationFromDb, null));
+      }
+    } catch (error) {
+      console.error("Refresh failed", error);
+      window.alert(`Refresh failed: ${error?.message || "Please check your connection and database permissions."}`);
+    } finally {
+      setRefreshing(false);
+    }
   }
 
   function shiftDate(days) {
@@ -1125,7 +1152,7 @@ function nextApptId() {
 
 const seedScheduledAppointments = [];
 
-function AppointmentBookingScreen({ allPatients, appointments, setAppointments, doctorNames, appointmentTypes, patientHistoryRecords, setPatientHistoryRecords }) {
+function AppointmentBookingScreen({ allPatients, appointments, setAppointments, doctorNames, appointmentTypes, patientHistoryRecords, setPatientHistoryRecords, onRefreshData }) {
   const [selectedDate, setSelectedDate] = useState(todayISO());
   const [showBookModal, setShowBookModal] = useState(false);
   const [prefillSlot, setPrefillSlot] = useState(null);
@@ -1152,14 +1179,26 @@ function AppointmentBookingScreen({ allPatients, appointments, setAppointments, 
   // Appointment Desk session too — refresh pulls the latest state (and today's
   // consultations, so "Seen" status stays accurate) without a full page reload.
   async function handleRefresh() {
+    if (refreshing) return;
     setRefreshing(true);
-    const [apptsRes, consultRes] = await Promise.all([
-      supabase.from("appointments").select("*"),
-      supabase.from("consultations").select("*"),
-    ]);
-    if (apptsRes.data) setAppointments(apptsRes.data.map(appointmentFromDb));
-    if (consultRes.data && setPatientHistoryRecords) setPatientHistoryRecords(groupByPatient(consultRes.data, consultationFromDb, null));
-    setRefreshing(false);
+    try {
+      if (onRefreshData) await onRefreshData();
+      else {
+        const [apptsRes, consultRes] = await Promise.all([
+          supabase.from("appointments").select("*"),
+          supabase.from("consultations").select("*"),
+        ]);
+        if (apptsRes.error) throw apptsRes.error;
+        if (consultRes.error) throw consultRes.error;
+        setAppointments((apptsRes.data || []).map(appointmentFromDb));
+        if (setPatientHistoryRecords) setPatientHistoryRecords(groupByPatient(consultRes.data || [], consultationFromDb, null));
+      }
+    } catch (error) {
+      console.error("Refresh failed", error);
+      window.alert(`Refresh failed: ${error?.message || "Please check your connection and database permissions."}`);
+    } finally {
+      setRefreshing(false);
+    }
   }
 
   async function handleBook({ patient, doctor, hour, minute, dateISO, appointmentType }) {
@@ -1485,6 +1524,19 @@ const apptStyles = {
 /* ============================================================================
    ROOMS & VACCINES SECTION (shared)
    ========================================================================== */
+function isVaccineReminderSuppressed(schedule) {
+  const others = (schedule || []).find((box) => box.isOthers);
+  return !!others?.hideDashboardReminders;
+}
+function setVaccineReminderSuppressed(schedule, hidden) {
+  return (schedule || []).map((box) => box.isOthers ? { ...box, hideDashboardReminders: !!hidden } : box);
+}
+function vaccineDaysFromToday(due) {
+  if (!due) return null;
+  const today = new Date(); today.setHours(0, 0, 0, 0);
+  const d = new Date(due); d.setHours(0, 0, 0, 0);
+  return Math.round((d - today) / 86400000);
+}
 function RoomsAndVaccinesSection({ vaccinationRecords, allPatients, rooms }) {
   const [showRooms, setShowRooms] = useState(true);
   const [showVaccines, setShowVaccines] = useState(true);
@@ -1498,18 +1550,23 @@ function RoomsAndVaccinesSection({ vaccinationRecords, allPatients, rooms }) {
     const patients = allPatients || [];
     for (const p of patients) {
       const schedule = records[p.id];
-      if (!schedule) continue;
+      if (!schedule || isVaccineReminderSuppressed(schedule)) continue;
       for (const v of flattenSchedule(schedule)) {
-        const status = getVStatus(v);
-        if (status === "red" || status === "yellow") {
+        if (v.given || !v.due) continue;
+        const days = vaccineDaysFromToday(v.due);
+        // Show overdue, due today, and upcoming vaccines from 7 days before the due date.
+        if (days !== null && days <= 7) {
           results.push({
             patient: p.name, id: p.id, phone: p.phone,
             vaccine: v.name + (v.dose ? ` (${v.dose})` : ""),
-            status: status === "red" ? "Overdue" : "Due today",
+            due: v.due,
+            days,
+            status: days < 0 ? "Overdue" : days === 0 ? "Due today" : `Due in ${days} day${days === 1 ? "" : "s"}`,
           });
         }
       }
     }
+    results.sort((a, b) => a.days - b.days || a.patient.localeCompare(b.patient));
     return results;
   }, [vaccinationRecords, allPatients]);
 
@@ -1751,12 +1808,17 @@ const regStyles = {
 function PatientsTab({ onSelectPatient, patients, onAddPatient }) {
   const [showRegistration, setShowRegistration] = useState(false);
   const [query, setQuery] = useState("");
-  const results = patients.filter((p) => {
+  const results = [...patients].filter((p) => {
     const q = query.trim();
     if (!q) return true;
     const qLower = q.toLowerCase();
     const qDigits = q.replace(/[^\d]/g, "");
     return p.name.toLowerCase().includes(qLower) || p.phone.includes(q) || p.id.toLowerCase().includes(qLower) || (qDigits.length > 0 && toDDMMYY(p.dob).startsWith(qDigits));
+  }).sort((a, b) => {
+    const an = parseInt(String(a.id || "").replace(/\D/g, ""), 10);
+    const bn = parseInt(String(b.id || "").replace(/\D/g, ""), 10);
+    if (Number.isFinite(an) && Number.isFinite(bn) && an !== bn) return an - bn;
+    return String(a.id || "").localeCompare(String(b.id || ""));
   });
   if (showRegistration) return <PatientRegistrationScreen existingPatients={patients} onCancel={() => setShowRegistration(false)} onDone={(np) => { onAddPatient(np); setShowRegistration(false); }} />;
   return (
@@ -3445,6 +3507,17 @@ function PatientVaccinationEditor({ schedule, setSchedule, editable }) {
   return (
     <div>
       {!editable && <div style={vaxStyles.readOnlyNote}>View only — only a doctor login can update vaccination dates.</div>}
+      {editable && (
+        <div style={vaxStyles.reminderControl}>
+          <div>
+            <div style={vaxStyles.reminderTitle}>Vaccine reminders for this patient</div>
+            <div style={vaxStyles.reminderSub}>Hide due/overdue reminders if the patient has moved out or should no longer be contacted. You can turn this back on anytime.</div>
+          </div>
+          <button type="button" style={{ ...vaxStyles.reminderToggle, ...(isVaccineReminderSuppressed(schedule) ? vaxStyles.reminderToggleOff : vaxStyles.reminderToggleOn) }} onClick={() => setSchedule((prev) => setVaccineReminderSuppressed(prev, !isVaccineReminderSuppressed(prev)))}>
+            {isVaccineReminderSuppressed(schedule) ? "Reminders off" : "Reminders on"}
+          </button>
+        </div>
+      )}
       <div style={vaxStyles.legend}>{Object.entries(vStatusStyles).map(([key, s]) => <span key={key} style={vaxStyles.legendItem}><span style={{ ...vaxStyles.legendDot, background: s.text }} />{s.label}</span>)}</div>
       <div style={vaxStyles.boxList}>
         {schedule.map((box, bi) => (
@@ -3494,6 +3567,12 @@ const vaxStyles = {
   legend: { display: "flex", gap: 14, marginBottom: 18, flexWrap: "wrap" },
   legendItem: { display: "flex", alignItems: "center", gap: 5, fontSize: 11.5, color: "#5B635F", fontWeight: 500 },
   legendDot: { width: 8, height: 8, borderRadius: "50%", display: "inline-block" },
+  reminderControl: { display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, background: "#fff", border: "1px solid #E8E6DF", borderRadius: 10, padding: "11px 12px", marginBottom: 14 },
+  reminderTitle: { fontSize: 12.5, fontWeight: 700, color: "#1B2320" },
+  reminderSub: { fontSize: 10.5, color: "#8A928F", lineHeight: 1.45, marginTop: 3, maxWidth: 430 },
+  reminderToggle: { border: "1px solid", borderRadius: 7, padding: "7px 10px", fontSize: 11, fontWeight: 700, cursor: "pointer", whiteSpace: "nowrap" },
+  reminderToggleOn: { background: "#EAF5EF", borderColor: "#BEE3CD", color: "#1E6B45" },
+  reminderToggleOff: { background: "#FDECEC", borderColor: "#F5C6C6", color: "#9B2C2C" },
   boxList: { display: "flex", flexDirection: "column", gap: 12 },
   box: { background: "#fff", border: "1px solid #E8E6DF", borderRadius: 10, padding: "12px 14px" },
   boxLabel: { fontSize: 13.5, fontWeight: 700, color: "#1B2320", marginBottom: 8 },
@@ -3592,31 +3671,40 @@ function ClinicSettings({ accounts, setAccounts, refreshAccounts, session, print
 
 function AuditLogPanel() {
   const [entries, setEntries] = useState([]);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [filter, setFilter] = useState("all");
 
   async function loadAudit() {
-    setLoading(true); setError("");
-    const [appointmentsRes, vitalsRes, consultationsRes] = await Promise.all([
-      supabase.from("appointments").select("*").order("check_in_at", { ascending: false }),
-      supabase.from("vitals").select("*").order("recorded_at", { ascending: false }),
-      supabase.from("consultations").select("*"),
-    ]);
-    if (appointmentsRes.error || vitalsRes.error || consultationsRes.error) {
-      setError("Some audit records could not be loaded. Please check the database permissions.");
+    setLoading(true);
+    setError("");
+    try {
+      const [appointmentsRes, vitalsRes, consultationsRes] = await Promise.all([
+        supabase.from("appointments").select("*"),
+        supabase.from("vitals").select("*"),
+        supabase.from("consultations").select("*"),
+      ]);
+      const errors = [appointmentsRes.error, vitalsRes.error, consultationsRes.error].filter(Boolean);
+      if (errors.length) {
+        console.error("Audit refresh errors", errors);
+        throw new Error(errors.map((e) => e.message).filter(Boolean).join(" | ") || "Unable to load one or more audit sources.");
+      }
+      const events = [];
+      (appointmentsRes.data || []).forEach((a) => {
+        if (a.created_at) events.push({ type: "appointment", at: a.created_at, title: "Appointment created", detail: `${a.patient_name || a.patient_id || "Patient"}${a.doctor_name ? ` · Dr. ${a.doctor_name}` : ""}` });
+        if (a.check_in_at) events.push({ type: "checkin", at: a.check_in_at, title: "Patient checked in", detail: `${a.patient_name || a.patient_id || "Patient"}${a.entry_source ? ` · ${a.entry_source}` : ""}` });
+        if (a.status === "cancelled") events.push({ type: "appointment", at: a.updated_at || a.created_at || a.check_in_at, title: "Appointment cancelled", detail: a.patient_name || a.patient_id || "Patient" });
+      });
+      (vitalsRes.data || []).forEach((v) => events.push({ type: "vitals", at: v.updated_at || v.recorded_at, title: "Vitals recorded/updated", detail: `Patient ${v.patient_id}${v.recorded_by ? ` · by ${v.recorded_by}` : ""}` }));
+      (consultationsRes.data || []).forEach((c) => events.push({ type: "consultation", at: c.created_at || c.updated_at || c.date_label, title: c.type === "IPD" ? "IPD record saved" : "Consultation saved", detail: `Patient ${c.patient_id}${c.consulting_doctor ? ` · Dr. ${c.consulting_doctor}` : ""}` }));
+      events.sort((a, b) => new Date(b.at || 0) - new Date(a.at || 0));
+      setEntries(events);
+    } catch (err) {
+      console.error("Audit log refresh failed", err);
+      setError(`Refresh failed: ${err?.message || "Please check your connection and database permissions."}`);
+    } finally {
+      setLoading(false);
     }
-    const events = [];
-    (appointmentsRes.data || []).forEach((a) => {
-      if (a.created_at) events.push({ type: "appointment", at: a.created_at, title: "Appointment created", detail: `${a.patient_name || a.patient_id || "Patient"}${a.doctor_name ? ` · Dr. ${a.doctor_name}` : ""}` });
-      if (a.check_in_at) events.push({ type: "checkin", at: a.check_in_at, title: "Patient checked in", detail: `${a.patient_name || a.patient_id || "Patient"}${a.entry_source ? ` · ${a.entry_source}` : ""}` });
-      if (a.status === "cancelled") events.push({ type: "appointment", at: a.updated_at || a.created_at || a.check_in_at, title: "Appointment cancelled", detail: a.patient_name || a.patient_id || "Patient" });
-    });
-    (vitalsRes.data || []).forEach((v) => events.push({ type: "vitals", at: v.updated_at || v.recorded_at, title: "Vitals recorded/updated", detail: `Patient ${v.patient_id}${v.recorded_by ? ` · by ${v.recorded_by}` : ""}` }));
-    (consultationsRes.data || []).forEach((c) => events.push({ type: "consultation", at: c.created_at || c.updated_at || c.date_label, title: c.type === "IPD" ? "IPD record saved" : "Consultation saved", detail: `Patient ${c.patient_id}${c.consulting_doctor ? ` · Dr. ${c.consulting_doctor}` : ""}` }));
-    events.sort((a, b) => new Date(b.at || 0) - new Date(a.at || 0));
-    setEntries(events);
-    setLoading(false);
   }
   useEffect(() => { loadAudit(); }, []);
   const shown = filter === "all" ? entries : entries.filter((e) => e.type === filter);
@@ -3628,7 +3716,7 @@ function AuditLogPanel() {
       </div>
       <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 14 }}>
         {[['all','All'],['appointment','Appointments'],['checkin','Check-ins'],['vitals','Vitals'],['consultation','Consultations']].map(([key,label]) => <button key={key} onClick={() => setFilter(key)} style={{ ...settingsStyles.roleChipOpt, ...(filter === key ? settingsStyles.roleChipOptActive : {}) }}>{label}</button>)}
-        <button onClick={loadAudit} style={{ ...settingsStyles.editStaffBtn, marginLeft: "auto" }}><RefreshCw size={13} style={{ marginRight: 5 }} />Refresh</button>
+        <button onClick={loadAudit} disabled={loading} style={{ ...settingsStyles.editStaffBtn, marginLeft: "auto", opacity: loading ? 0.6 : 1, cursor: loading ? "wait" : "pointer" }}><RefreshCw size={13} style={{ marginRight: 5 }} />{loading ? "Refreshing…" : "Refresh"}</button>
       </div>
       {error && <div style={{ fontSize: 12, color: "#9B2C2C", marginBottom: 10 }}>{error}</div>}
       {loading ? <div style={{ fontSize: 13, color: "#8A928F", padding: "18px 0" }}>Loading audit log…</div> : shown.length === 0 ? <div style={{ fontSize: 13, color: "#8A928F", padding: "18px 0" }}>No recorded activity found yet.</div> : (
