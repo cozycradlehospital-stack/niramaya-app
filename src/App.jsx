@@ -2222,7 +2222,7 @@ function PatientProfileScreen({ patient, onClose, session, printSettings, vaccin
   async function saveVitals() {
     const now = new Date();
     const recordedOnStr = now.toLocaleString("en-IN", { day: "2-digit", month: "short", year: "numeric", hour: "numeric", minute: "2-digit" });
-    const dateLabel = now.toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" });
+    const dateLabel = indiaDateLabel(now);
     const newEntry = { ...vitalsDraft, recordedOn: recordedOnStr, dateLabel, dateISO: indiaDateISO(now) };
     const existingToday = vitalsHistory.find((row) => row.dateISO === newEntry.dateISO || row.dateLabel === dateLabel || indiaDateLabel(new Date(row.dateISO)) === dateLabel);
     setVitalsHistory((prev) => {
