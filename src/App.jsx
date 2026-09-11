@@ -3587,7 +3587,12 @@ function GrowthChartMetric({ patient, vitalsHistory, metric }) {
   // as five SD curves: −2 SD, −1 SD, Median, +1 SD, +2 SD. Patient observations
   // are intentionally dots only — never connected by a patient line.
   const baseRef = refTable[sexKey].filter(r => r.age <= maxAge).sort((a,b) => a.age-b.age);
-  const ref = baseRef.length ? baseRef : refTable[sexKey];
+  const ref = baseRef.length ? baseRef : (refTable[sexKey] || []);
+  if (!ref.length) {
+    return <div style={{ ...ppStyles.growthBox, display: "flex", alignItems: "center", justifyContent: "center", textAlign: "center", padding: 4 }}>
+      <div style={{ fontSize: 7.5, color: "#B0B5B1" }}>{shortLabel}<br />reference data unavailable</div>
+    </div>;
+  }
   const refByAge = (age) => {
     if (age <= ref[0].age) return ref[0];
     if (age >= ref[ref.length - 1].age) return ref[ref.length - 1];
@@ -3619,7 +3624,9 @@ function GrowthChartMetric({ patient, vitalsHistory, metric }) {
   const pathFor = curve => curve.map((r,i) => `${i === 0 ? "M" : "L"} ${x(r.age).toFixed(1)} ${y(r.value).toFixed(1)}`).join(" ");
   const patientPath = points.map((p,i) => `${i === 0 ? "M" : "L"} ${x(p.age).toFixed(1)} ${y(p.value).toFixed(1)}`).join(" ");
   const last = points[points.length-1];
-  const years = [0, 2, 4, 6, 8, 10, 12, 14, 16, 18].filter(v => v * 12 <= maxAge);
+  const years = isHeadCirc
+    ? [0, 1, 2, 3, 4, 5]
+    : [0, 2, 4, 6, 8, 10, 12, 14, 16, 18];
   const gridValues = [0,1,2,3,4].map(i => minVal + (maxVal-minVal) * i / 4);
   const lineDefs = [
     ["m2", "−2 SD", "#C98A8A"], ["m1", "−1 SD", "#D6B37A"], ["median", "M", "#8A928F"],
@@ -3633,8 +3640,8 @@ function GrowthChartMetric({ patient, vitalsHistory, metric }) {
       {years.map(yr => <line key={`gx${yr}`} x1={x(yr*12)} y1={padT} x2={x(yr*12)} y2={H-padB} stroke="#F0EEE9" strokeWidth="0.7" />)}
       <line x1={padL} y1={padT} x2={padL} y2={H-padB} stroke="#CFCBC1" strokeWidth="0.9" />
       <line x1={padL} y1={H-padB} x2={W-padR} y2={H-padB} stroke="#CFCBC1" strokeWidth="0.9" />
-      {lineDefs.map(([key,label,stroke]) => <path key={key} d={pathFor(curves[key])} fill="none" stroke={stroke} strokeWidth={key === "median" ? 1.35 : 1.05} strokeDasharray="4 3" />)}
-      {points.length > 1 && <path d={patientPath} fill="none" stroke="#0B3B36" strokeWidth="2.8" strokeLinecap="round" strokeLinejoin="round" />}
+      {lineDefs.map(([key,label,stroke]) => <path key={key} d={pathFor(curves[key])} fill="none" stroke={stroke} strokeWidth={key === "median" ? 1.4 : 1.1} strokeDasharray="4 3" />)}
+      {points.length > 1 && <path d={patientPath} fill="none" stroke="#0B3B36" strokeWidth="3.6" strokeLinecap="round" strokeLinejoin="round" />}
       {years.map(yr => <text key={`xt${yr}`} x={x(yr*12)} y={H-10} textAnchor="middle" fontSize="8" fill="#6D746F">{yr}</text>)}
       {lineDefs.map(([key,label],i) => <text key={`lab${key}`} x={padL + i * 66} y={12} fontSize="8" fill="#5B635F">{label}</text>)}
       <text x={W-8} y={H-10} textAnchor="end" fontSize="8" fill="#6D746F">Age (years)</text>
