@@ -1,3 +1,4 @@
+/* NIRAMAYA_SYNC_2026-09-12: appointment search, profile booking, prescription autocomplete, vitals safety, and growth chart updates */
 import React, { useState, useEffect, useMemo, useRef } from "react";
 import { supabase } from "./supabaseClient";
 import {
