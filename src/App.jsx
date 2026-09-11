@@ -246,7 +246,6 @@ export default function App() {
   useEffect(() => { if (session) { loadAccounts(); loadReferenceData(); } }, [session?.id]);
 
   async function handleLogout() {
-    await waitForPendingWrites();
     await supabase.auth.signOut();
     setSession(null);
   }
@@ -411,8 +410,7 @@ function Shell({ session, onLogout, accounts, setAccounts, refreshAccounts, room
         </div>
       </div>
 
-      <div className="shell-body">
-      <div style={styles.content} className="shell-content">
+      <div style={styles.content}>
         {!dataLoaded ? (
           <div style={{ padding: 40, textAlign: "center", color: "#8A928F", fontSize: 13 }}>Loading clinic data…</div>
         ) : selectedPatient ? (
@@ -451,48 +449,17 @@ function Shell({ session, onLogout, accounts, setAccounts, refreshAccounts, room
       </div>
 
       {!selectedPatient && (
-        <div style={styles.bottomNav} className="bottom-nav no-print">
+        <div style={styles.bottomNav} className="no-print">
           {navItems.map((item) => {
             const Icon = item.icon, active = activeTab === item.key;
             return (
-              <button key={item.key} onClick={() => setActiveTab(item.key)} style={{ ...styles.navBtn, ...(active ? styles.navBtnActive : {}) }} className="nav-btn">
-                <Icon size={19} /><span style={styles.navLabel} className="nav-label">{item.label}</span>
+              <button key={item.key} onClick={() => setActiveTab(item.key)} style={{ ...styles.navBtn, ...(active ? styles.navBtnActive : {}) }}>
+                <Icon size={19} /><span style={styles.navLabel}>{item.label}</span>
               </button>
             );
           })}
         </div>
       )}
-      </div>
-
-      {/* Desktop (>=900px): nav moves from a bottom bar to a left sidebar.
-          Mobile is untouched — same bottom bar, same tabs, just layout. */}
-      <style>{`
-        .shell-body { display: flex; flex-direction: column; flex: 1; min-height: 0; }
-        @media (min-width: 900px) {
-          .shell-body { flex-direction: row-reverse; }
-          .bottom-nav {
-            position: static !important;
-            flex-direction: column !important;
-            width: 220px;
-            min-width: 220px;
-            height: auto !important;
-            border-top: none !important;
-            border-right: 1px solid #E8E6DF;
-            padding: 16px 10px !important;
-            gap: 4px;
-          }
-          .bottom-nav .nav-btn {
-            flex-direction: row !important;
-            justify-content: flex-start !important;
-            width: 100%;
-            padding: 10px 12px !important;
-            border-radius: 8px;
-            gap: 10px !important;
-          }
-          .bottom-nav .nav-label { font-size: 13px !important; }
-          .shell-content { padding-bottom: 24px !important; }
-        }
-      `}</style>
     </div>
   );
 }
@@ -781,17 +748,12 @@ function ReceptionDashboardScreen({ onSelectPatient, allPatients, appointments, 
           : [newEntry, ...prevHistory];
         return { ...recs, [patientId]: nextHistory };
       });
-      beginWrite();
-      try {
-        if (existingToday?.dbId) {
-          const { error } = await supabase.from("vitals").update(vitalsToDb(newEntry, patientId, session?.id)).eq("id", existingToday.dbId);
-          if (error) console.error("Failed to update vitals", error);
-        } else {
-          const { error } = await supabase.from("vitals").insert(vitalsToDb(newEntry, patientId, session?.id));
-          if (error) console.error("Failed to save vitals", error);
-        }
-      } finally {
-        endWrite();
+      if (existingToday?.dbId) {
+        const { error } = await supabase.from("vitals").update(vitalsToDb(newEntry, patientId, session?.id)).eq("id", existingToday.dbId);
+        if (error) console.error("Failed to update vitals", error);
+      } else {
+        const { error } = await supabase.from("vitals").insert(vitalsToDb(newEntry, patientId, session?.id));
+        if (error) console.error("Failed to save vitals", error);
       }
     }
     setCheckInFor(null);
@@ -1132,7 +1094,7 @@ function consultationFromDb(r) {
   }
   const base = { dbId: r.id, type: "OPD", date: r.date_label, doctor: r.consulting_doctor, diagnosis: r.diagnosis, hasPrescription: r.has_prescription, bookedDoctor: r.booked_doctor, consultingDoctor: r.consulting_doctor };
   if (!r.has_prescription) return base;
-  return { ...base, prescription: { date: r.date_label, bookedDoctor: r.booked_doctor, consultingDoctor: r.consulting_doctor, complaints: r.complaints, findings: r.findings, diagnosis: r.diagnosis, medications: r.medications || [], investigations: r.investigations, instructions: r.instructions, followUp: r.follow_up } };
+  return { ...base, prescription: { date: r.date_label, bookedDoctor: r.booked_doctor, consultingDoctor: r.consulting_doctor, pastHistory: r.past_history || "", complaints: r.complaints, findings: r.findings, diagnosis: r.diagnosis, medications: r.medications || [], investigations: r.investigations, instructions: r.instructions, followUp: r.follow_up } };
 }
 function consultationToDb(h, patientId) {
   if (h.type === "IPD") {
@@ -1142,21 +1104,9 @@ function consultationToDb(h, patientId) {
   return {
     patient_id: patientId, type: "OPD", date_label: h.date, booked_doctor: h.bookedDoctor || null, consulting_doctor: h.consultingDoctor || h.doctor,
     diagnosis: h.diagnosis || null, has_prescription: !!h.hasPrescription,
-    complaints: rx.complaints || null, findings: rx.findings || null, medications: rx.medications || null,
+    past_history: rx.pastHistory || null, complaints: rx.complaints || null, findings: rx.findings || null, medications: rx.medications || null,
     investigations: rx.investigations || null, instructions: rx.instructions || null, follow_up: rx.followUp || null,
   };
-}
-
-// Tracks in-flight Supabase writes so logout can wait for them instead of
-// racing the network request (was causing vitals entered right before
-// logout to silently not save).
-let pendingWriteCount = 0;
-function beginWrite() { pendingWriteCount++; }
-function endWrite() { pendingWriteCount = Math.max(0, pendingWriteCount - 1); }
-async function waitForPendingWrites() {
-  while (pendingWriteCount > 0) {
-    await new Promise((r) => setTimeout(r, 100));
-  }
 }
 
 const roomFromDb = (r) => ({ number: r.number, type: r.type, status: r.status, patient: r.patient_name, patientId: r.patient_id, doctor: r.doctor, fileNumber: r.file_number, admitDate: r.admit_date });
@@ -2272,7 +2222,7 @@ function PatientProfileScreen({ patient, onClose, session, printSettings, vaccin
   async function saveVitals() {
     const now = new Date();
     const recordedOnStr = now.toLocaleString("en-IN", { day: "2-digit", month: "short", year: "numeric", hour: "numeric", minute: "2-digit" });
-    const dateLabel = indiaDateLabel(now);
+    const dateLabel = now.toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" });
     const newEntry = { ...vitalsDraft, recordedOn: recordedOnStr, dateLabel, dateISO: indiaDateISO(now) };
     const existingToday = vitalsHistory.find((row) => row.dateISO === newEntry.dateISO || row.dateLabel === dateLabel || indiaDateLabel(new Date(row.dateISO)) === dateLabel);
     setVitalsHistory((prev) => {
@@ -2287,17 +2237,12 @@ function PatientProfileScreen({ patient, onClose, session, printSettings, vaccin
     setEditingVitals(false);
     // Upsert-by-day: same "one entry per calendar day" rule the UI already enforces,
     // mirrored server-side so a doctor and reception editing the same day don't create duplicates.
-    beginWrite();
-    try {
-      if (existingToday?.dbId) {
-        const { error } = await supabase.from("vitals").update(vitalsToDb(newEntry, patient.id, session.id)).eq("id", existingToday.dbId);
-        if (error) console.error("Failed to update vitals", error);
-      } else {
-        const { error } = await supabase.from("vitals").insert(vitalsToDb(newEntry, patient.id, session.id));
-        if (error) console.error("Failed to save vitals", error);
-      }
-    } finally {
-      endWrite();
+    if (existingToday?.dbId) {
+      const { error } = await supabase.from("vitals").update(vitalsToDb(newEntry, patient.id, session.id)).eq("id", existingToday.dbId);
+      if (error) console.error("Failed to update vitals", error);
+    } else {
+      const { error } = await supabase.from("vitals").insert(vitalsToDb(newEntry, patient.id, session.id));
+      if (error) console.error("Failed to save vitals", error);
     }
   }
 
@@ -2603,6 +2548,7 @@ function parseMedicationsForCopy(meds) {
 function NewConsultationForm({ patient, session, onCancel, onSave, copyFrom, doctorNames, quickPickLists, setQuickPickLists, vitalsHistory }) {
   const lists = quickPickLists || initialLists;
   const [bookedDoctor, setBookedDoctor] = useState(session.name);
+  const [pastHistory, setPastHistory] = useState(() => copyFrom?.pastHistory || "");
   const [complaints, setComplaints] = useState(() => (copyFrom ? parseComplaintsForCopy(copyFrom.complaints) : []));
   const [findings, setFindings] = useState(() => (copyFrom ? parseListForCopy(copyFrom.findings) : []));
   const [diagnoses, setDiagnoses] = useState(() => (copyFrom ? parseListForCopy(copyFrom.diagnosis) : []));
@@ -2643,6 +2589,7 @@ function NewConsultationForm({ patient, session, onCancel, onSave, copyFrom, doc
 
   function templateSnapshot() {
     return {
+      pastHistory,
       complaints: complaints.map((c) => ({ ...c })),
       findings: [...findings],
       diagnosis: [...diagnoses],
@@ -2657,6 +2604,7 @@ function NewConsultationForm({ patient, session, onCancel, onSave, copyFrom, doc
   function applyTemplate(template) {
     if (!template) return;
     const data = template.data || template;
+    setPastHistory(data.pastHistory || "");
     setComplaints((data.complaints || []).map((c) => ({ ...c })));
     setFindings([...(data.findings || [])]);
     setDiagnoses([...(data.diagnosis || data.diagnoses || [])]);
@@ -2717,6 +2665,7 @@ function NewConsultationForm({ patient, session, onCancel, onSave, copyFrom, doc
       date: indiaDateLabel(),
       createdAt: new Date().toISOString(),
       bookedDoctor, consultingDoctor: session.name, consultingDoctorId: session.username,
+      pastHistory: pastHistory.trim(),
       complaints: complaints.map((c) => c.manualDuration ? `${c.name} (${c.manualDuration})` : c.durationValue ? `${c.name} (${c.durationValue} ${c.durationUnit})` : c.name).join(", "),
       findings: findings.join(", "), diagnosis: diagnoses.join(", "),
       medications: medications.map((m) => ({ name: m.name, strength: m.strength || (findWeightDoseRule(m.name, dosePresets)?.strength || ""), dosage: m.dosage ? `${m.dosage}${m.doseUnit ? ` ${m.doseUnit}` : ""}`.trim() : "", frequency: m.frequency === customFrequencyKey ? (m.customFrequency || "Custom frequency") : (frequencyOptions.find((f) => f.key === m.frequency)?.label || m.frequency), days: m.durationDays, remark: m.remark || "" })),
@@ -2777,6 +2726,16 @@ function NewConsultationForm({ patient, session, onCancel, onSave, copyFrom, doc
             <span>Booked for <b>{bookedDoctor}</b>, consultation completed by <b>{session.name}</b>. Both are recorded for the audit log.</span>
           </div>
         )}
+
+        <FieldBlock icon={<HistoryIcon size={14} />} label="Past history">
+          <textarea
+            style={{ ...consultStyles.input, minHeight: 90, resize: "vertical", lineHeight: 1.5, fontFamily: "inherit" }}
+            value={pastHistory}
+            onChange={(e) => setPastHistory(e.target.value)}
+            placeholder="Type past medical history, previous illness, surgery, allergy, long-term medication, relevant family history, etc."
+          />
+          <div style={{ fontSize: 11, color: "#8A928F", marginTop: 5 }}>Free text — no predefined list or length limit.</div>
+        </FieldBlock>
 
         <FieldBlock icon={<ClipboardList size={14} />} label="Chief complaint">
           <Autocomplete options={lists.complaint} excluded={complaints.map((c) => c.name)} placeholder="Type to search or add…"
@@ -3052,6 +3011,7 @@ function PrescriptionViewer({ entry, patient, onBack, printSettings, vaxList, vi
         <div style={ppStyles.divider} />
         {editing ? (
           <div style={{ padding: 20, display: "flex", flexDirection: "column", gap: 14 }}>
+            <RxField label="Past history" value={draft.pastHistory || ""} onChange={(v) => setDraft({ ...draft, pastHistory: v })} />
             <EditReusableField label="Complaints" value={draft.complaints} onChange={(v) => setDraft({ ...draft, complaints: v })} options={editLists.complaint || []} field="complaint" setQuickPickLists={setQuickPickLists} />
             <EditReusableField label="Findings" value={draft.findings} onChange={(v) => setDraft({ ...draft, findings: v })} options={editLists.finding || []} field="finding" setQuickPickLists={setQuickPickLists} />
             <EditReusableField label="Diagnosis" value={draft.diagnosis} onChange={(v) => setDraft({ ...draft, diagnosis: v })} options={editLists.diagnosis || []} field="diagnosis" setQuickPickLists={setQuickPickLists} />
@@ -3082,6 +3042,7 @@ function PrescriptionViewer({ entry, patient, onBack, printSettings, vaxList, vi
           </div>
         ) : (
           <div style={{ paddingBottom: 24 }}>
+            {rx.pastHistory && <RxSection label="Past history" value={rx.pastHistory} />}
             {ps.includeComplaints && <RxSection label="Complaints" value={rx.complaints} />}
             {ps.includeFindings && <RxSection label="Findings" value={rx.findings} />}
             {ps.includeDiagnosis && <RxSection label="Diagnosis" value={rx.diagnosis} />}
@@ -3847,13 +3808,63 @@ function DrugDosePresetsPanel({ quickPickLists, setQuickPickLists }) {
     }];
     const existingMeds = quickPickLists?.medication || [];
     const medicationNext = [...existingMeds.filter((m) => String(m).toLowerCase() !== String(previousName).toLowerCase() && String(m).toLowerCase() !== cleanName.toLowerCase()), cleanName];
+    // Save the dose-preset row first. The dose preset is a new quick_pick_lists
+    // field, so older databases may not have that row yet. If RLS blocks the
+    // insert, do not claim the change was saved locally; show the exact policy
+    // problem instead.
+    const dosePayload = { field: "medicationDosePresets", items: next };
+    const { data: existingDoseRow, error: doseLookupError } = await supabase
+      .from("quick_pick_lists")
+      .select("field")
+      .eq("field", "medicationDosePresets")
+      .maybeSingle();
+    if (doseLookupError) {
+      console.error("Failed to check medicationDosePresets row", doseLookupError);
+      setMessage(doseLookupError.message || "Could not check drug dose settings.");
+      return;
+    }
+
+    const doseRes = existingDoseRow
+      ? await supabase.from("quick_pick_lists").update({ items: next }).eq("field", "medicationDosePresets")
+      : await supabase.from("quick_pick_lists").insert(dosePayload);
+
+    if (doseRes.error) {
+      console.error("Failed to save medicationDosePresets", doseRes.error);
+      const msg = String(doseRes.error.message || "Could not save dose preset.");
+      if (/row-level security|rls|policy/i.test(msg)) {
+        setMessage("Supabase RLS is blocking creation of the new medicationDosePresets row. Add an INSERT policy for quick_pick_lists for Admin users, then save again.");
+      } else {
+        setMessage(msg);
+      }
+      return;
+    }
+
+    // Keep the medicine master list in sync. This row normally already exists
+    // in installations that have the prescription medicine list. If it does not,
+    // use the same update/insert pattern and surface RLS clearly.
+    const { data: existingMedRow, error: medLookupError } = await supabase
+      .from("quick_pick_lists")
+      .select("field")
+      .eq("field", "medication")
+      .maybeSingle();
+    if (medLookupError) {
+      console.error("Failed to check medication row", medLookupError);
+      setMessage(medLookupError.message || "Dose saved, but medicine list could not be checked.");
+      return;
+    }
+    const medRes = existingMedRow
+      ? await supabase.from("quick_pick_lists").update({ items: medicationNext }).eq("field", "medication")
+      : await supabase.from("quick_pick_lists").insert({ field: "medication", items: medicationNext });
+    if (medRes.error) {
+      console.error("Failed to save medication list", medRes.error);
+      const msg = String(medRes.error.message || "Could not update medicine list.");
+      setMessage(/row-level security|rls|policy/i.test(msg)
+        ? "Dose preset saved, but Supabase RLS blocked updating the medicine list. Add an INSERT/UPDATE policy for quick_pick_lists for Admin users."
+        : msg);
+      return;
+    }
+
     setQuickPickLists?.((prev) => ({ ...prev, medicationDosePresets: next, medication: medicationNext }));
-    const [doseRes, medRes] = await Promise.all([
-      supabase.from("quick_pick_lists").upsert({ field: "medicationDosePresets", items: next }, { onConflict: "field" }),
-      supabase.from("quick_pick_lists").upsert({ field: "medication", items: medicationNext }, { onConflict: "field" })
-    ]);
-    const error = doseRes.error || medRes.error;
-    if (error) { console.error("Failed to save medication/dose preset", error); setMessage(error.message || "Could not save dose preset."); return; }
     setMessage(editingName ? "Drug dose preset updated and medicine list refreshed." : "Drug dose preset saved and medicine added to the prescription list.");
     resetForm();
   }
@@ -3863,9 +3874,20 @@ function DrugDosePresetsPanel({ quickPickLists, setQuickPickLists }) {
   async function deletePreset(nameToDelete) {
     const next = presets.filter((r) => r.name !== nameToDelete);
     // Keep the medicine searchable even after its dose preset is deleted; only the automatic dose rule is removed.
+    const { data: existingDoseRow, error: lookupError } = await supabase
+      .from("quick_pick_lists").select("field").eq("field", "medicationDosePresets").maybeSingle();
+    if (lookupError) { setMessage(lookupError.message || "Could not check dose settings."); return; }
+    const { error } = existingDoseRow
+      ? await supabase.from("quick_pick_lists").update({ items: next }).eq("field", "medicationDosePresets")
+      : await supabase.from("quick_pick_lists").insert({ field: "medicationDosePresets", items: next });
+    if (error) {
+      setMessage(/row-level security|rls|policy/i.test(String(error.message))
+        ? "Supabase RLS is blocking the medicationDosePresets row. Add the Admin INSERT/UPDATE policy, then try again."
+        : (error.message || "Could not delete preset."));
+      return;
+    }
     setQuickPickLists?.((prev) => ({ ...prev, medicationDosePresets: next }));
-    const { error } = await supabase.from("quick_pick_lists").upsert({ field: "medicationDosePresets", items: next }, { onConflict: "field" });
-    setMessage(error ? (error.message || "Could not delete preset.") : "Dose preset deleted. The medicine remains in the prescription list.");
+    setMessage("Dose preset deleted. The medicine remains in the prescription list.");
   }
 
   return (
