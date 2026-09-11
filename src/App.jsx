@@ -2221,13 +2221,94 @@ const statusColors = {
   "not-due": { bg: "#F1F1EF", border: "#DEDDD6", text: "#8A928F", label: "Not yet due" },
 };
 
+function VitalsTab({ currentVitals, vitalsHistory, editingVitals, vitalsDraft, setVitalsDraft, saveVitals, setEditingVitals, startEditVitals, canEdit }) {
+  const safeCurrent = currentVitals && typeof currentVitals === "object" ? currentVitals : {};
+  const safeDraft = vitalsDraft && typeof vitalsDraft === "object" ? vitalsDraft : safeCurrent;
+  const rows = Array.isArray(vitalsHistory) ? vitalsHistory.filter((r) => r && typeof r === "object") : [];
+  const fields = [
+    ["weight", "Weight", "kg", Weight], ["height", "Height", "cm", Ruler],
+    ["headCirc", "Head circumference", "cm", Activity], ["pr", "Pulse rate (PR)", "bpm", HeartPulse],
+    ["rr", "Respiratory rate (RR)", "/min", Wind], ["temp", "Temperature", "°F", Thermometer],
+    ["spo2", "SpO2", "%", Droplet],
+  ];
+
+  if (editingVitals) {
+    return <div>
+      <div style={ppStyles.vitalsGrid}>
+        {fields.map(([key, label, unit]) => (
+          <label key={key} style={ppStyles.editLabel}>
+            {label} <span style={ppStyles.unitInline}>({unit})</span>
+            <input
+              style={ppStyles.editInput}
+              type="text"
+              inputMode="decimal"
+              value={safeDraft[key]?.value ?? ""}
+              onChange={(e) => setVitalsDraft({ ...safeDraft, [key]: { value: e.target.value, unit } })}
+            />
+          </label>
+        ))}
+      </div>
+      <div style={ppStyles.editActions}>
+        <button style={ppStyles.saveBtn} onClick={saveVitals}>Save vitals</button>
+        <button style={ppStyles.cancelBtn} onClick={() => setEditingVitals(false)}>Cancel</button>
+      </div>
+    </div>;
+  }
+
+  const bmi = calcBMI(safeCurrent.weight, safeCurrent.height);
+  const bmiCat = bmiCategory(bmi);
+  return <div>
+    <div style={ppStyles.vitalsRecordedOn}>
+      {safeCurrent.recordedOn ? `Last recorded: ${safeCurrent.recordedOn}` : "No vitals recorded yet for this patient."}
+    </div>
+    <div style={ppStyles.vitalsGrid}>
+      {fields.map(([key, label], i) => {
+        const Icon = fields[i][3];
+        const item = safeCurrent[key] && typeof safeCurrent[key] === "object" ? safeCurrent[key] : {};
+        return <div key={key} style={ppStyles.vitalCard}>
+          <div style={ppStyles.vitalIcon}><Icon size={15} /></div>
+          <div style={ppStyles.vitalLabel}>{label}</div>
+          <div style={ppStyles.vitalValue}>{item.value || "—"} <span style={ppStyles.unitText}>{item.value ? item.unit || "" : ""}</span></div>
+        </div>;
+      })}
+      {bmi && <div style={ppStyles.vitalCard}>
+        <div style={ppStyles.vitalIcon}><Activity size={15} /></div>
+        <div style={ppStyles.vitalLabel}>BMI</div>
+        <div style={ppStyles.vitalValue}>{bmi}{bmiCat && <span style={{ ...ppStyles.bmiTagSmall, color: bmiCat.color, borderColor: bmiCat.color }}>{bmiCat.label}</span>}</div>
+      </div>}
+    </div>
+    {canEdit ? <button style={ppStyles.editTrigger} onClick={startEditVitals}>Update vitals</button> : <div style={ppStyles.lockedNote}>Vitals can be updated by a doctor or reception login.</div>}
+
+    {rows.length > 0 && <div style={ppStyles.historyTableWrap}>
+      <div style={ppStyles.historyTableTitle}>Vitals history</div>
+      <div style={ppStyles.tableScroll}>
+        <table style={ppStyles.table}>
+          <thead><tr>
+            {['Date','Weight','Height','Head circ.','PR','RR','Temp','SpO2','BMI'].map((h) => <th key={h} style={ppStyles.th}>{h}</th>)}
+          </tr></thead>
+          <tbody>{rows.map((row, i) => <tr key={i} style={i % 2 === 1 ? ppStyles.trAlt : undefined}>
+            <td style={ppStyles.tdDate}>{row.dateLabel || row.recordedOn || "—"}</td>
+            {['weight','height','headCirc','pr','rr','temp','spo2'].map((key) => { const v = row[key] && typeof row[key] === "object" ? row[key] : {}; return <td key={key} style={ppStyles.td}>{v.value || ""}{v.value ? <span style={ppStyles.unitTextSmall}> {v.unit || ""}</span> : null}</td>; })}
+            <td style={ppStyles.td}>{calcBMI(row.weight, row.height) || "—"}</td>
+          </tr>)}</tbody>
+        </table>
+      </div>
+    </div>}
+  </div>;
+}
+
 function PatientProfileScreen({ patient, onClose, session, printSettings, vaccinationRecords, setVaccinationRecords, vitalsRecords, setVitalsRecords, patientHistoryRecords, setPatientHistoryRecords, doctorNames, clinicDetails, quickPickLists, setQuickPickLists, onUpdatePatient, onBookAppointment }) {
   const [tab, setTab] = useState("profile");
   const role = session.role;
   const isDoctor = session.role === "doctor";
   // vitalsHistory: array of dated entries, newest first. vitalsRecords[patientId] stores this array
   // so both Doctor and Reception read/write the same history (mirrors the vaccination records pattern).
-  const [vitalsHistory, setVitalsHistoryLocal] = useState(() => (vitalsRecords && vitalsRecords[patient.id]) || (patient.vitals?.recordedOn ? [patient.vitals] : []));
+  const [vitalsHistory, setVitalsHistoryLocal] = useState(() => {
+    const stored = vitalsRecords && vitalsRecords[patient.id];
+    if (Array.isArray(stored)) return stored.filter(Boolean);
+    if (patient?.vitals && typeof patient.vitals === "object" && patient.vitals.recordedOn) return [patient.vitals];
+    return [];
+  });
   const safeVitalsHistory = Array.isArray(vitalsHistory) ? vitalsHistory.filter(Boolean) : [];
   const currentVitals = safeVitalsHistory[0] || { recordedOn: null, weight: {}, height: {}, headCirc: {}, pr: {}, rr: {}, temp: {}, spo2: {} };
   const [editingVitals, setEditingVitals] = useState(false);
@@ -2242,7 +2323,10 @@ function PatientProfileScreen({ patient, onClose, session, printSettings, vaccin
   const [profileData, setProfileData] = useState(patient);
   const [editingProfile, setEditingProfile] = useState(false);
   const [profileDraft, setProfileDraft] = useState(patient);
-  const [history, setHistoryLocal] = useState(() => (patientHistoryRecords && patientHistoryRecords[patient.id]) || patient.history);
+  const [history, setHistoryLocal] = useState(() => {
+    const stored = patientHistoryRecords && patientHistoryRecords[patient.id];
+    return Array.isArray(stored) ? stored : (Array.isArray(patient?.history) ? patient.history : []);
+  });
   function setHistory(updater) {
     setHistoryLocal((prev) => {
       const next = typeof updater === "function" ? updater(prev) : updater;
@@ -2255,7 +2339,10 @@ function PatientProfileScreen({ patient, onClose, session, printSettings, vaccin
   const [followUpSource, setFollowUpSource] = useState(null);
   const [printingHandwritten, setPrintingHandwritten] = useState(false);
   const [printingVaccination, setPrintingVaccination] = useState(false);
-  const [vaxSchedule, setVaxScheduleLocal] = useState(() => (vaccinationRecords && vaccinationRecords[patient.id]) || buildMainSchedule(patient.dob));
+  const [vaxSchedule, setVaxScheduleLocal] = useState(() => {
+    const stored = vaccinationRecords && vaccinationRecords[patient.id];
+    return Array.isArray(stored) ? stored : buildMainSchedule(patient.dob);
+  });
   function setVaxSchedule(updater) {
     setVaxScheduleLocal((prev) => {
       const next = typeof updater === "function" ? updater(prev) : updater;
@@ -2316,15 +2403,16 @@ function PatientProfileScreen({ patient, onClose, session, printSettings, vaccin
     const recordedOnStr = now.toLocaleString("en-IN", { day: "2-digit", month: "short", year: "numeric", hour: "numeric", minute: "2-digit" });
     const dateLabel = now.toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" });
     const newEntry = { ...vitalsDraft, recordedOn: recordedOnStr, dateLabel, dateISO: indiaDateISO(now) };
-    const existingToday = vitalsHistory.find((row) => row.dateISO === newEntry.dateISO || row.dateLabel === dateLabel || indiaDateLabel(new Date(row.dateISO)) === dateLabel);
+    const existingToday = safeVitalsHistory.find((row) => row.dateISO === newEntry.dateISO || row.dateLabel === dateLabel || indiaDateLabel(new Date(row.dateISO)) === dateLabel);
     setVitalsHistory((prev) => {
-      const existingTodayIndex = prev.findIndex((row) => row.dateISO === newEntry.dateISO || row.dateLabel === dateLabel || indiaDateLabel(new Date(row.dateISO)) === dateLabel);
+      const safePrev = Array.isArray(prev) ? prev.filter(Boolean) : [];
+      const existingTodayIndex = safePrev.findIndex((row) => row.dateISO === newEntry.dateISO || row.dateLabel === dateLabel || indiaDateLabel(new Date(row.dateISO)) === dateLabel);
       if (existingTodayIndex >= 0) {
-        const next = [...prev];
+        const next = [...safePrev];
         next[existingTodayIndex] = newEntry;
         return next;
       }
-      return [newEntry, ...prev];
+      return [newEntry, ...safePrev];
     });
     setEditingVitals(false);
     // Upsert-by-day: enforced by a unique (patient_id, recorded_date) constraint in
@@ -2427,73 +2515,17 @@ function PatientProfileScreen({ patient, onClose, session, printSettings, vaccin
           )}
 
           {tab === "vitals" && (
-            editingVitals ? (
-              <div>
-                <div style={ppStyles.vitalsGrid}>
-                  {[["weight", "Weight", "kg"], ["height", "Height", "cm"], ["headCirc", "Head circumference", "cm"], ["pr", "Pulse rate (PR)", "bpm"], ["rr", "Respiratory rate (RR)", "/min"], ["temp", "Temperature", "°F"], ["spo2", "SpO2", "%"]].map(([k, label, unit]) => (
-                    <label key={k} style={ppStyles.editLabel}>
-                      {label} <span style={ppStyles.unitInline}>({unit})</span>
-                      <input style={ppStyles.editInput} type="text" inputMode="decimal" value={vitalsDraft[k]?.value ?? ""} onChange={(e) => setVitalsDraft({ ...vitalsDraft, [k]: { value: e.target.value, unit } })} />
-                    </label>
-                  ))}
-                </div>
-                <div style={ppStyles.editActions}><button style={ppStyles.saveBtn} onClick={saveVitals}>Save vitals</button><button style={ppStyles.cancelBtn} onClick={() => setEditingVitals(false)}>Cancel</button></div>
-              </div>
-            ) : (
-              <div>
-                <div style={ppStyles.vitalsRecordedOn}>{currentVitals.recordedOn ? `Last recorded: ${currentVitals.recordedOn}` : "No vitals recorded yet for this patient."}</div>
-                <div style={ppStyles.vitalsGrid}>
-                  {[["weight", "Weight", <Weight size={15} />], ["height", "Height", <Ruler size={15} />], ["headCirc", "Head circumference", <Activity size={15} />], ["pr", "Pulse rate (PR)", <HeartPulse size={15} />], ["rr", "Respiratory rate (RR)", <Wind size={15} />], ["temp", "Temperature", <Thermometer size={15} />], ["spo2", "SpO2", <Droplet size={15} />]].map(([k, label, icon]) => (
-                    <div key={k} style={ppStyles.vitalCard}>
-                      <div style={ppStyles.vitalIcon}>{icon}</div>
-                      <div style={ppStyles.vitalLabel}>{label}</div>
-                      <div style={ppStyles.vitalValue}>{currentVitals[k]?.value || "—"} <span style={ppStyles.unitText}>{currentVitals[k]?.value ? currentVitals[k]?.unit : ""}</span></div>
-                    </div>
-                  ))}
-                  {(() => { const bmi = calcBMI(currentVitals.weight, currentVitals.height); const cat = bmiCategory(bmi); if (!bmi) return null;
-                    return <div style={ppStyles.vitalCard}><div style={ppStyles.vitalIcon}><Activity size={15} /></div><div style={ppStyles.vitalLabel}>BMI</div><div style={ppStyles.vitalValue}>{bmi}{cat && <span style={{ ...ppStyles.bmiTagSmall, color: cat.color, borderColor: cat.color }}>{cat.label}</span>}</div></div>; })()}
-                </div>
-                {(isDoctor || session.role === "receptionist") ? <button style={ppStyles.editTrigger} onClick={startEditVitals}>Update vitals</button> : <div style={ppStyles.lockedNote}>Vitals can be updated by a doctor or reception login.</div>}
-
-                {safeVitalsHistory.length > 0 && (
-                  <div style={ppStyles.historyTableWrap}>
-                    <div style={ppStyles.historyTableTitle}>Vitals history</div>
-                    <div style={ppStyles.tableScroll}>
-                      <table style={ppStyles.table}>
-                        <thead>
-                          <tr>
-                            <th style={ppStyles.th}>Date</th>
-                            <th style={ppStyles.th}>Weight</th>
-                            <th style={ppStyles.th}>Height</th>
-                            <th style={ppStyles.th}>Head circ.</th>
-                            <th style={ppStyles.th}>PR</th>
-                            <th style={ppStyles.th}>RR</th>
-                            <th style={ppStyles.th}>Temp</th>
-                            <th style={ppStyles.th}>SpO2</th>
-                            <th style={ppStyles.th}>BMI</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {safeVitalsHistory.map((row, i) => (
-                            <tr key={i} style={i % 2 === 1 ? ppStyles.trAlt : undefined}>
-                              <td style={ppStyles.tdDate}>{row.dateLabel || row.recordedOn}</td>
-                              <td style={ppStyles.td}>{row.weight?.value}{row.weight?.value ? <span style={ppStyles.unitTextSmall}> {row.weight.unit}</span> : null}</td>
-                              <td style={ppStyles.td}>{row.height?.value}{row.height?.value ? <span style={ppStyles.unitTextSmall}> {row.height.unit}</span> : null}</td>
-                              <td style={ppStyles.td}>{row.headCirc?.value}{row.headCirc?.value ? <span style={ppStyles.unitTextSmall}> {row.headCirc.unit}</span> : null}</td>
-                              <td style={ppStyles.td}>{row.pr?.value}{row.pr?.value ? <span style={ppStyles.unitTextSmall}> {row.pr.unit}</span> : null}</td>
-                              <td style={ppStyles.td}>{row.rr?.value}{row.rr?.value ? <span style={ppStyles.unitTextSmall}> {row.rr.unit}</span> : null}</td>
-                              <td style={ppStyles.td}>{row.temp?.value}{row.temp?.value ? <span style={ppStyles.unitTextSmall}> {row.temp.unit}</span> : null}</td>
-                              <td style={ppStyles.td}>{row.spo2?.value}{row.spo2?.value ? <span style={ppStyles.unitTextSmall}> {row.spo2.unit}</span> : null}</td>
-                              <td style={ppStyles.td}>{calcBMI(row.weight, row.height) || "—"}</td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
-                  </div>
-                )}
-              </div>
-            )
+            <VitalsTab
+              currentVitals={currentVitals}
+              vitalsHistory={safeVitalsHistory}
+              editingVitals={editingVitals}
+              vitalsDraft={vitalsDraft}
+              setVitalsDraft={setVitalsDraft}
+              saveVitals={saveVitals}
+              setEditingVitals={setEditingVitals}
+              startEditVitals={startEditVitals}
+              canEdit={isDoctor || session.role === "receptionist"}
+            />
           )}
 
           {tab === "vaccinations" && (
