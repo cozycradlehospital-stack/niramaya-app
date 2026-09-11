@@ -246,6 +246,7 @@ export default function App() {
   useEffect(() => { if (session) { loadAccounts(); loadReferenceData(); } }, [session?.id]);
 
   async function handleLogout() {
+    await waitForPendingWrites();
     await supabase.auth.signOut();
     setSession(null);
   }
@@ -410,7 +411,8 @@ function Shell({ session, onLogout, accounts, setAccounts, refreshAccounts, room
         </div>
       </div>
 
-      <div style={styles.content}>
+      <div className="shell-body">
+      <div style={styles.content} className="shell-content">
         {!dataLoaded ? (
           <div style={{ padding: 40, textAlign: "center", color: "#8A928F", fontSize: 13 }}>Loading clinic data…</div>
         ) : selectedPatient ? (
@@ -449,17 +451,48 @@ function Shell({ session, onLogout, accounts, setAccounts, refreshAccounts, room
       </div>
 
       {!selectedPatient && (
-        <div style={styles.bottomNav} className="no-print">
+        <div style={styles.bottomNav} className="bottom-nav no-print">
           {navItems.map((item) => {
             const Icon = item.icon, active = activeTab === item.key;
             return (
-              <button key={item.key} onClick={() => setActiveTab(item.key)} style={{ ...styles.navBtn, ...(active ? styles.navBtnActive : {}) }}>
-                <Icon size={19} /><span style={styles.navLabel}>{item.label}</span>
+              <button key={item.key} onClick={() => setActiveTab(item.key)} style={{ ...styles.navBtn, ...(active ? styles.navBtnActive : {}) }} className="nav-btn">
+                <Icon size={19} /><span style={styles.navLabel} className="nav-label">{item.label}</span>
               </button>
             );
           })}
         </div>
       )}
+      </div>
+
+      {/* Desktop (>=900px): nav moves from a bottom bar to a left sidebar.
+          Mobile is untouched — same bottom bar, same tabs, just layout. */}
+      <style>{`
+        .shell-body { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+        @media (min-width: 900px) {
+          .shell-body { flex-direction: row-reverse; }
+          .bottom-nav {
+            position: static !important;
+            flex-direction: column !important;
+            width: 220px;
+            min-width: 220px;
+            height: auto !important;
+            border-top: none !important;
+            border-right: 1px solid #E8E6DF;
+            padding: 16px 10px !important;
+            gap: 4px;
+          }
+          .bottom-nav .nav-btn {
+            flex-direction: row !important;
+            justify-content: flex-start !important;
+            width: 100%;
+            padding: 10px 12px !important;
+            border-radius: 8px;
+            gap: 10px !important;
+          }
+          .bottom-nav .nav-label { font-size: 13px !important; }
+          .shell-content { padding-bottom: 24px !important; }
+        }
+      `}</style>
     </div>
   );
 }
@@ -748,12 +781,17 @@ function ReceptionDashboardScreen({ onSelectPatient, allPatients, appointments, 
           : [newEntry, ...prevHistory];
         return { ...recs, [patientId]: nextHistory };
       });
-      if (existingToday?.dbId) {
-        const { error } = await supabase.from("vitals").update(vitalsToDb(newEntry, patientId, session?.id)).eq("id", existingToday.dbId);
-        if (error) console.error("Failed to update vitals", error);
-      } else {
-        const { error } = await supabase.from("vitals").insert(vitalsToDb(newEntry, patientId, session?.id));
-        if (error) console.error("Failed to save vitals", error);
+      beginWrite();
+      try {
+        if (existingToday?.dbId) {
+          const { error } = await supabase.from("vitals").update(vitalsToDb(newEntry, patientId, session?.id)).eq("id", existingToday.dbId);
+          if (error) console.error("Failed to update vitals", error);
+        } else {
+          const { error } = await supabase.from("vitals").insert(vitalsToDb(newEntry, patientId, session?.id));
+          if (error) console.error("Failed to save vitals", error);
+        }
+      } finally {
+        endWrite();
       }
     }
     setCheckInFor(null);
@@ -1075,15 +1113,31 @@ const appointmentToDb = (a) => ({
   vitals: a.vitals || null,
 });
 
+const VITALS_UNITS = { weight: "kg", height: "cm", headCirc: "cm", pr: "bpm", rr: "/min", temp: "°F", spo2: "%" };
 const vitalsFromDb = (r) => ({
-  dbId: r.id, weight: r.weight, height: r.height, headCirc: r.head_circ, pr: r.pr, rr: r.rr, temp: r.temp, spo2: r.spo2,
+  dbId: r.id,
+  weight: { value: r.weight ?? "", unit: VITALS_UNITS.weight },
+  height: { value: r.height ?? "", unit: VITALS_UNITS.height },
+  headCirc: { value: r.head_circ ?? "", unit: VITALS_UNITS.headCirc },
+  pr: { value: r.pr ?? "", unit: VITALS_UNITS.pr },
+  rr: { value: r.rr ?? "", unit: VITALS_UNITS.rr },
+  temp: { value: r.temp ?? "", unit: VITALS_UNITS.temp },
+  spo2: { value: r.spo2 ?? "", unit: VITALS_UNITS.spo2 },
   dateLabel: r.date_label, dateISO: r.recorded_at,
   recordedOn: indiaDateTimeLabel(new Date(r.recorded_at)),
 });
+// Vitals fields arrive shaped as { value, unit } (from the entry forms) — pull out
+// the numeric value before sending to Postgres numeric columns, which reject objects.
+const numVal = (f) => {
+  const raw = f && typeof f === "object" ? f.value : f;
+  if (raw === "" || raw === undefined || raw === null) return null;
+  const n = Number(raw);
+  return Number.isNaN(n) ? null : n;
+};
 const vitalsToDb = (v, patientId, recordedBy) => ({
   patient_id: patientId, recorded_by: recordedBy || null, date_label: v.dateLabel,
-  weight: v.weight || null, height: v.height || null, head_circ: v.headCirc || null,
-  pr: v.pr || null, rr: v.rr || null, temp: v.temp || null, spo2: v.spo2 || null,
+  weight: numVal(v.weight), height: numVal(v.height), head_circ: numVal(v.headCirc),
+  pr: numVal(v.pr), rr: numVal(v.rr), temp: numVal(v.temp), spo2: numVal(v.spo2),
 });
 
 // Consultations cover both OPD (has a `prescription` sub-object) and IPD (admit/discharge) —
@@ -1107,6 +1161,18 @@ function consultationToDb(h, patientId) {
     past_history: rx.pastHistory || null, complaints: rx.complaints || null, findings: rx.findings || null, medications: rx.medications || null,
     investigations: rx.investigations || null, instructions: rx.instructions || null, follow_up: rx.followUp || null,
   };
+}
+
+// Tracks in-flight Supabase writes so logout can wait for them instead of
+// racing the network request (was causing vitals entered right before
+// logout to silently not save).
+let pendingWriteCount = 0;
+function beginWrite() { pendingWriteCount++; }
+function endWrite() { pendingWriteCount = Math.max(0, pendingWriteCount - 1); }
+async function waitForPendingWrites() {
+  while (pendingWriteCount > 0) {
+    await new Promise((r) => setTimeout(r, 100));
+  }
 }
 
 const roomFromDb = (r) => ({ number: r.number, type: r.type, status: r.status, patient: r.patient_name, patientId: r.patient_id, doctor: r.doctor, fileNumber: r.file_number, admitDate: r.admit_date });
@@ -2237,12 +2303,17 @@ function PatientProfileScreen({ patient, onClose, session, printSettings, vaccin
     setEditingVitals(false);
     // Upsert-by-day: same "one entry per calendar day" rule the UI already enforces,
     // mirrored server-side so a doctor and reception editing the same day don't create duplicates.
-    if (existingToday?.dbId) {
-      const { error } = await supabase.from("vitals").update(vitalsToDb(newEntry, patient.id, session.id)).eq("id", existingToday.dbId);
-      if (error) console.error("Failed to update vitals", error);
-    } else {
-      const { error } = await supabase.from("vitals").insert(vitalsToDb(newEntry, patient.id, session.id));
-      if (error) console.error("Failed to save vitals", error);
+    beginWrite();
+    try {
+      if (existingToday?.dbId) {
+        const { error } = await supabase.from("vitals").update(vitalsToDb(newEntry, patient.id, session.id)).eq("id", existingToday.dbId);
+        if (error) console.error("Failed to update vitals", error);
+      } else {
+        const { error } = await supabase.from("vitals").insert(vitalsToDb(newEntry, patient.id, session.id));
+        if (error) console.error("Failed to save vitals", error);
+      }
+    } finally {
+      endWrite();
     }
   }
 
