@@ -3678,7 +3678,7 @@ function GrowthChartMetric({ patient, vitalsHistory, metric }) {
   const curves = { m2: curveFor(-2), m1: curveFor(-1), median: curveFor(0), p1: curveFor(1), p2: curveFor(2) };
   const maxVal = Math.max(...Object.values(curves).flat().map(p => p.value), ...points.map(p => p.value)) * 1.06;
   const minVal = Math.max(0, Math.min(...Object.values(curves).flat().map(p => p.value)) * 0.9);
-  const W = 560, H = 250, padL = 42, padR = 12, padT = 18, padB = 30;
+  const W = 144, H = 144, padL = 22, padR = 5, padT = 17, padB = 20;
   const x = age => padL + (Math.min(Math.max(age, 0), maxAge) / maxAge) * (W - padL - padR);
   const y = v => H - padB - ((v - minVal) / Math.max(0.001, maxVal - minVal)) * (H - padT - padB);
   const pathFor = curve => curve.map((r,i) => `${i === 0 ? "M" : "L"} ${x(r.age).toFixed(1)} ${y(r.value).toFixed(1)}`).join(" ");
@@ -3686,28 +3686,28 @@ function GrowthChartMetric({ patient, vitalsHistory, metric }) {
   const last = points[points.length-1];
   const years = isHeadCirc
     ? [0, 1, 2, 3, 4, 5]
-    : [0, 2, 4, 6, 8, 10, 12, 14, 16, 18];
+    : [0, 6, 12, 18];
   const gridValues = [0,1,2,3,4].map(i => minVal + (maxVal-minVal) * i / 4);
   const lineDefs = [
     ["m2", "−2 SD", "#C98A8A"], ["m1", "−1 SD", "#D6B37A"], ["median", "M", "#8A928F"],
     ["p1", "+1 SD", "#D6B37A"], ["p2", "+2 SD", "#C98A8A"]
   ];
 
-  return <div style={{ width: "100%", maxWidth: 570 }}>
+  return <div style={{ width: "1.5in", maxWidth: "1.5in", flex: "0 0 1.5in", minWidth: 0, boxSizing: "border-box", overflow: "hidden" }}>
     <div style={{ fontSize: 9.5, fontWeight: 700, color: "#0B3B36", marginBottom: 3 }}>{shortLabel} · {isHeadCirc ? "0–5 years" : "0–18 years"}</div>
-    <svg viewBox={`0 0 ${W} ${H}`} width="100%" style={{ background: "#FBFAF8", border: "1px solid #EEECE5", borderRadius: 6, display: "block" }}>
+    <svg viewBox={`0 0 ${W} ${H}`} width="144" height="144" preserveAspectRatio="xMidYMid meet" style={{ width: "1.5in", height: "1.5in", maxWidth: "1.5in", maxHeight: "1.5in", background: "#FBFAF8", border: "1px solid #EEECE5", borderRadius: 6, display: "block" }}>
       {gridValues.map((v,i) => <line key={`gy${i}`} x1={padL} y1={y(v)} x2={W-padR} y2={y(v)} stroke="#ECEAE4" strokeWidth="0.7" />)}
       {years.map(yr => <line key={`gx${yr}`} x1={x(yr*12)} y1={padT} x2={x(yr*12)} y2={H-padB} stroke="#F0EEE9" strokeWidth="0.7" />)}
       <line x1={padL} y1={padT} x2={padL} y2={H-padB} stroke="#CFCBC1" strokeWidth="0.9" />
       <line x1={padL} y1={H-padB} x2={W-padR} y2={H-padB} stroke="#CFCBC1" strokeWidth="0.9" />
       {lineDefs.map(([key,label,stroke]) => <path key={key} d={pathFor(curves[key])} fill="none" stroke={stroke} strokeWidth={key === "median" ? 1.4 : 1.1} strokeDasharray="4 3" />)}
       {points.length > 1 && <path d={patientPath} fill="none" stroke="#0B3B36" strokeWidth="3.6" strokeLinecap="round" strokeLinejoin="round" />}
-      {years.map(yr => <text key={`xt${yr}`} x={x(yr*12)} y={H-10} textAnchor="middle" fontSize="8" fill="#6D746F">{yr}</text>)}
-      {lineDefs.map(([key,label],i) => <text key={`lab${key}`} x={padL + i * 66} y={12} fontSize="8" fill="#5B635F">{label}</text>)}
-      <text x={W-8} y={H-10} textAnchor="end" fontSize="8" fill="#6D746F">Age (years)</text>
+      {years.map(yr => <text key={`xt${yr}`} x={x(yr*12)} y={H-7} textAnchor="middle" fontSize="6.5" fill="#6D746F">{yr}</text>)}
+      {lineDefs.map(([key,label],i) => <text key={`lab${key}`} x={padL + i * 23} y={11} fontSize="5.5" fill="#5B635F">{label}</text>)}
+      <text x={W-4} y={H-7} textAnchor="end" fontSize="8" fill="#6D746F">Age (years)</text>
       {points.map((p,i) => <circle key={i} cx={x(p.age)} cy={y(p.value)} r="3" fill="#0B3B36" stroke="#FFFFFF" strokeWidth="1" />)}
     </svg>
-    <div style={{ fontSize: 7.5, color: "#5B635F", marginTop: 2 }}>Latest: {last.value}{unit} · bold line + dots = recorded measurements</div>
+    <div style={{ fontSize: 6.5, color: "#5B635F", marginTop: 1, whiteSpace: "nowrap" }}>Latest: {last.value}{unit} · bold line + dots = recorded measurements</div>
   </div>;
 }
 function GrowthChartSVG({ patient, vitalsHistory }) {
