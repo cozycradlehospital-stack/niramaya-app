@@ -2384,7 +2384,10 @@ function PatientProfileScreen({ patient, onClose, session, printSettings, vaccin
             <div style={ppStyles.name}>{profileData.name}</div>
             <div style={ppStyles.subline}>{profileData.id} · {profileData.sex} · {calcAge(profileData.dob)}</div>
           </div>
-          {onClose && <button style={ppStyles.closeBtn} onClick={onClose}>Close</button>}
+          <div style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }}>
+            {onBookAppointment && <button style={ppStyles.closeBtn} onClick={() => onBookAppointment(profileData)}>Book appointment</button>}
+            {onClose && <button style={ppStyles.closeBtn} onClick={onClose}>Close</button>}
+          </div>
         </div>
 
         <div style={ppStyles.tabBar}>
@@ -3565,42 +3568,79 @@ function GrowthChartMetric({ patient, vitalsHistory, metric }) {
   const isHeadCirc = metric === "headCirc";
   const isWeight = metric === "weight";
   const isUnder5 = ageMonths <= 60;
-  const refTable = isHeadCirc ? growthRefHeadCirc : (isWeight ? (isUnder5 ? growthRefWeight : growthRefWeight5to18) : (isUnder5 ? growthRefHeight : growthRefHeight5to18));
+  const refTable = isHeadCirc ? growthRefHeadCirc : (isWeight ? { boys: [...growthRefWeight.boys, ...growthRefWeight5to18.boys.filter(r => r.age > 60)], girls: [...growthRefWeight.girls, ...growthRefWeight5to18.girls.filter(r => r.age > 60)] } : { boys: [...growthRefHeight.boys, ...growthRefHeight5to18.boys.filter(r => r.age > 60)], girls: [...growthRefHeight.girls, ...growthRefHeight5to18.girls.filter(r => r.age > 60)] });
   const unit = isWeight ? "kg" : "cm";
   const shortLabel = isHeadCirc ? "HC/Age" : (isWeight ? "Wt/Age" : "Ht/Age");
-  const fullLabel = isHeadCirc ? "Head circumference-for-age" : (isWeight ? "Weight-for-age" : "Height-for-age");
   const rawHistory = (vitalsHistory && vitalsHistory.length > 0) ? vitalsHistory : (patient.vitals ? [patient.vitals] : []);
-  const points = rawHistory.map(row => ({ age: ageInMonths(patient.dob, row.dateISO || undefined), value: parseFloat(row[metric]?.value) }))
-    .filter(p => !isNaN(p.value) && p.age >= (isHeadCirc || isUnder5 ? 0 : 60) && p.age <= (isHeadCirc ? 60 : 216)).sort((a,b) => a.age-b.age);
   const maxAge = isHeadCirc ? 60 : 216;
-  if (ageMonths > maxAge || points.length === 0) {
+  const points = rawHistory.map(row => ({ age: ageInMonths(patient.dob, row.dateISO || undefined), value: parseFloat(row[metric]?.value) }))
+    .filter(p => !isNaN(p.value) && p.age >= 0 && p.age <= maxAge).sort((a,b) => a.age-b.age);
+
+  if (points.length === 0) {
     return <div style={{ ...ppStyles.growthBox, display: "flex", alignItems: "center", justifyContent: "center", textAlign: "center", padding: 4 }}>
       <div style={{ fontSize: 7.5, color: "#B0B5B1" }}>{shortLabel}<br />no data</div>
     </div>;
   }
-  const ref = refTable[sexKey];
-  // Small square canvas, several sit side by side in one row — this is the main
-  // fix for prints spilling onto a near-blank second page.
-  const W = 130, H = 130, padL = 20, padR = 5, padT = 6, padB = 12;
-  const maxVal = Math.max(...ref.map(r => r.p97), ...points.map(p => p.value)) + 2;
-  const x = age => padL + (Math.min(age, maxAge) / maxAge) * (W - padL - padR);
-  const y = v => H - padB - (Math.min(v, maxVal) / maxVal) * (H - padT - padB);
-  const pathFor = key => ref.map((r,i) => `${i === 0 ? "M" : "L"} ${x(r.age).toFixed(1)} ${y(r[key]).toFixed(1)}`).join(" ");
+
+  // The chart always spans the complete reference age range (0–18 years for
+  // weight/height; 0–5 years for head circumference). Reference data are shown
+  // as five SD curves: −2 SD, −1 SD, Median, +1 SD, +2 SD. Patient observations
+  // are intentionally dots only — never connected by a patient line.
+  const baseRef = refTable[sexKey].filter(r => r.age <= maxAge).sort((a,b) => a.age-b.age);
+  const ref = baseRef.length ? baseRef : refTable[sexKey];
+  const refByAge = (age) => {
+    if (age <= ref[0].age) return ref[0];
+    if (age >= ref[ref.length - 1].age) return ref[ref.length - 1];
+    for (let i = 1; i < ref.length; i++) {
+      if (age <= ref[i].age) {
+        const a = ref[i - 1], b = ref[i], t = (age - a.age) / (b.age - a.age || 1);
+        return { age, p3: a.p3 + (b.p3-a.p3)*t, p50: a.p50 + (b.p50-a.p50)*t, p97: a.p97 + (b.p97-a.p97)*t };
+      }
+    }
+    return ref[ref.length - 1];
+  };
+  // The existing reference tables contain the outer P3/P97 and median values.
+  // Convert those to the requested five evenly-spaced SD guide curves for the
+  // visual chart, keeping the median in the middle.
+  const curveFor = (sd) => {
+    const t = Math.abs(sd) / 2;
+    return Array.from({ length: maxAge + 1 }, (_, age) => {
+      const r = refByAge(age);
+      const value = sd < 0 ? r.p50 - (r.p50-r.p3)*t : sd > 0 ? r.p50 + (r.p97-r.p50)*t : r.p50;
+      return { age, value };
+    });
+  };
+  const curves = { m2: curveFor(-2), m1: curveFor(-1), median: curveFor(0), p1: curveFor(1), p2: curveFor(2) };
+  const maxVal = Math.max(...Object.values(curves).flat().map(p => p.value), ...points.map(p => p.value)) * 1.06;
+  const minVal = Math.max(0, Math.min(...Object.values(curves).flat().map(p => p.value)) * 0.9);
+  const W = 560, H = 250, padL = 42, padR = 12, padT = 18, padB = 30;
+  const x = age => padL + (Math.min(Math.max(age, 0), maxAge) / maxAge) * (W - padL - padR);
+  const y = v => H - padB - ((v - minVal) / Math.max(0.001, maxVal - minVal)) * (H - padT - padB);
+  const pathFor = curve => curve.map((r,i) => `${i === 0 ? "M" : "L"} ${x(r.age).toFixed(1)} ${y(r.value).toFixed(1)}`).join(" ");
   const patientPath = points.map((p,i) => `${i === 0 ? "M" : "L"} ${x(p.age).toFixed(1)} ${y(p.value).toFixed(1)}`).join(" ");
-  const last = points[points.length-1], lastX = x(last.age), lastY = y(last.value);
-  return <div style={{ width: "1in" }}>
-    <div style={{ fontSize: 8, fontWeight: 700, color: "#0B3B36", marginBottom: 2, textAlign: "center" }}>{shortLabel}</div>
-    <svg width="1in" height="1in" viewBox={`0 0 ${W} ${H}`} style={{ background: "#FBFAF8", border: "1px solid #EEECE5", borderRadius: 6, display: "block" }}>
-      <line x1={padL} y1={H-padB} x2={W-padR} y2={H-padB} stroke="#DCD9D0" strokeWidth="0.75" />
-      <line x1={padL} y1={padT} x2={padL} y2={H-padB} stroke="#DCD9D0" strokeWidth="0.75" />
-      <text x={1} y={padT+4} fontSize="5.5" fill="#8A928F">{maxVal.toFixed(0)}{unit}</text>
-      <path d={pathFor("p97")} fill="none" stroke="#F0C9A0" strokeWidth="0.75" strokeDasharray="2 1.5" />
-      <path d={pathFor("p50")} fill="none" stroke="#B0B5B1" strokeWidth="0.75" strokeDasharray="2 1.5" />
-      <path d={pathFor("p3")} fill="none" stroke="#F0C9A0" strokeWidth="0.75" strokeDasharray="2 1.5" />
-      <path d={patientPath} fill="none" stroke="#0B3B36" strokeWidth="1.3" />
-      {points.map((p,i) => <circle key={i} cx={x(p.age)} cy={y(p.value)} r="1.8" fill="#0B3B36" />)}
+  const last = points[points.length-1];
+  const years = [0, 2, 4, 6, 8, 10, 12, 14, 16, 18].filter(v => v * 12 <= maxAge);
+  const gridValues = [0,1,2,3,4].map(i => minVal + (maxVal-minVal) * i / 4);
+  const lineDefs = [
+    ["m2", "−2 SD", "#C98A8A"], ["m1", "−1 SD", "#D6B37A"], ["median", "M", "#8A928F"],
+    ["p1", "+1 SD", "#D6B37A"], ["p2", "+2 SD", "#C98A8A"]
+  ];
+
+  return <div style={{ width: "100%", maxWidth: 570 }}>
+    <div style={{ fontSize: 9.5, fontWeight: 700, color: "#0B3B36", marginBottom: 3 }}>{shortLabel} · {isHeadCirc ? "0–5 years" : "0–18 years"}</div>
+    <svg viewBox={`0 0 ${W} ${H}`} width="100%" style={{ background: "#FBFAF8", border: "1px solid #EEECE5", borderRadius: 6, display: "block" }}>
+      {gridValues.map((v,i) => <line key={`gy${i}`} x1={padL} y1={y(v)} x2={W-padR} y2={y(v)} stroke="#ECEAE4" strokeWidth="0.7" />)}
+      {years.map(yr => <line key={`gx${yr}`} x1={x(yr*12)} y1={padT} x2={x(yr*12)} y2={H-padB} stroke="#F0EEE9" strokeWidth="0.7" />)}
+      <line x1={padL} y1={padT} x2={padL} y2={H-padB} stroke="#CFCBC1" strokeWidth="0.9" />
+      <line x1={padL} y1={H-padB} x2={W-padR} y2={H-padB} stroke="#CFCBC1" strokeWidth="0.9" />
+      {lineDefs.map(([key,label,stroke]) => <path key={key} d={pathFor(curves[key])} fill="none" stroke={stroke} strokeWidth={key === "median" ? 1.35 : 1.05} strokeDasharray="4 3" />)}
+      {points.length > 1 && <path d={patientPath} fill="none" stroke="#0B3B36" strokeWidth="2.8" strokeLinecap="round" strokeLinejoin="round" />}
+      {years.map(yr => <text key={`xt${yr}`} x={x(yr*12)} y={H-10} textAnchor="middle" fontSize="8" fill="#6D746F">{yr}</text>)}
+      {lineDefs.map(([key,label],i) => <text key={`lab${key}`} x={padL + i * 66} y={12} fontSize="8" fill="#5B635F">{label}</text>)}
+      <text x={W-8} y={H-10} textAnchor="end" fontSize="8" fill="#6D746F">Age (years)</text>
+      {points.map((p,i) => <circle key={i} cx={x(p.age)} cy={y(p.value)} r="3" fill="#0B3B36" stroke="#FFFFFF" strokeWidth="1" />)}
     </svg>
-    <div style={{ fontSize: 7, color: "#5B635F", textAlign: "center", marginTop: 1 }}>{last.value}{unit}</div>
+    <div style={{ fontSize: 7.5, color: "#5B635F", marginTop: 2 }}>Latest: {last.value}{unit} · bold line + dots = recorded measurements</div>
   </div>;
 }
 function GrowthChartSVG({ patient, vitalsHistory }) {
