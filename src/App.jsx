@@ -2275,7 +2275,7 @@ function PatientProfileScreen({ patient, onClose, session, printSettings, vaccin
   }
 
   if (viewingRx) return <PrescriptionViewer entry={viewingRx} patient={profileData} onBack={() => setViewingRx(null)} printSettings={printSettings} vaxList={flattenSchedule(vaxSchedule)} vitalsHistory={vitalsHistory} clinicDetails={clinicDetails} quickPickLists={quickPickLists} setQuickPickLists={setQuickPickLists} />;
-  if (creatingRx) return <NewConsultationForm patient={profileData} session={session} onCancel={() => { setCreatingRx(false); setFollowUpSource(null); }} onSave={saveNewConsultation} copyFrom={followUpSource} doctorNames={doctorNames} quickPickLists={quickPickLists} setQuickPickLists={setQuickPickLists} />;
+  if (creatingRx) return <NewConsultationForm patient={profileData} session={session} onCancel={() => { setCreatingRx(false); setFollowUpSource(null); }} onSave={saveNewConsultation} copyFrom={followUpSource} doctorNames={doctorNames} quickPickLists={quickPickLists} setQuickPickLists={setQuickPickLists} vitalsHistory={vitalsHistory} />;
   if (printingHandwritten) return <HandwrittenPrescriptionView patient={profileData} doctorName={session.name} onBack={() => setPrintingHandwritten(false)} printSettings={printSettings} vitalsHistory={vitalsHistory} onPrinted={recordHandwrittenCheckout} clinicDetails={clinicDetails} />;
   if (printingVaccination) return <VaccinationCertificateView patient={profileData} schedule={vaxSchedule} onBack={() => setPrintingVaccination(false)} printSettings={printSettings} clinicDetails={clinicDetails} />;
 
@@ -2489,7 +2489,31 @@ const initialLists = {
   frequency: ["SOS (as needed)", "Before food", "After food", "At bedtime", "Every 6 hours", "Every 8 hours", "Every 12 hours"],
   instruction: ["Plenty of fluids", "Adequate rest", "Avoid oily food", "Steam inhalation", "Complete the full course"],
   referral: [],
+  consultationTemplates: [],
 };
+
+// Doctor-configured weight-dose presets. No medical doses are hard-coded here.
+// The doctor enters the volume dose in mL/kg, the product strength, frequency and duration.
+// Selecting that medicine then uses today's recorded weight to calculate the volume in mL
+// and pre-fills the configured frequency/days. No medical dose recommendations are built in.
+// Example shape: { name: "Example syrup", doseMlKg: 0.5, strength: "250 mg/5 mL", frequency: "3", days: "5" }
+function findWeightDoseRule(name, rules) {
+  const q = String(name || "").trim().toLowerCase();
+  if (!q) return null;
+  return (rules || []).find((rule) => {
+    const n = String(rule?.name || "").trim().toLowerCase();
+    return n && (q === n || q.includes(n) || n.includes(q));
+  }) || null;
+}
+
+function calculatePresetMl(rule, weightKg) {
+  const weight = Number(weightKg);
+  const doseMlKg = Number(rule?.doseMlKg);
+  if (!rule || !Number.isFinite(weight) || weight <= 0 || !Number.isFinite(doseMlKg) || doseMlKg <= 0) return "";
+  const ml = weight * doseMlKg;
+  return String(Math.round(ml * 10) / 10);
+}
+
 const frequencyOptions = [
   { key: "1", label: "Once a day (OD)" }, { key: "2", label: "Twice a day (BD)" },
   { key: "3", label: "Thrice a day (TDS)" }, { key: "4", label: "4 times a day (QID)" },
@@ -2519,11 +2543,11 @@ function parseMedicationsForCopy(meds) {
     name: m.name, dosage: m.dosage || "", doseUnit: inferDoseUnit(m.dosage),
     frequency: frequencyOptions.find((f) => f.label === m.frequency)?.key || (m.frequency ? customFrequencyKey : "1"),
     customFrequency: frequencyOptions.some((f) => f.label === m.frequency) ? "" : (m.frequency || ""),
-    durationDays: m.days || "", remark: m.remark || "",
+    durationDays: m.days || "", remark: m.remark || "", strength: m.strength || "",
   }));
 }
 
-function NewConsultationForm({ patient, session, onCancel, onSave, copyFrom, doctorNames, quickPickLists, setQuickPickLists }) {
+function NewConsultationForm({ patient, session, onCancel, onSave, copyFrom, doctorNames, quickPickLists, setQuickPickLists, vitalsHistory }) {
   const lists = quickPickLists || initialLists;
   const [bookedDoctor, setBookedDoctor] = useState(session.name);
   const [complaints, setComplaints] = useState(() => (copyFrom ? parseComplaintsForCopy(copyFrom.complaints) : []));
@@ -2542,6 +2566,20 @@ function NewConsultationForm({ patient, session, onCancel, onSave, copyFrom, doc
   });
   const [followUpDate, setFollowUpDate] = useState("");
   const [followUpReason, setFollowUpReason] = useState("");
+  const [templateName, setTemplateName] = useState("");
+  const [editingTemplateName, setEditingTemplateName] = useState("");
+  const [showTemplateManager, setShowTemplateManager] = useState(false);
+  const [showDoseManager, setShowDoseManager] = useState(false);
+  const [dosePresetName, setDosePresetName] = useState("");
+  const [dosePresetMlKg, setDosePresetMlKg] = useState("");
+  const [dosePresetStrength, setDosePresetStrength] = useState("");
+  const [dosePresetFrequency, setDosePresetFrequency] = useState("1");
+  const [dosePresetDays, setDosePresetDays] = useState("");
+  const [editingDosePresetName, setEditingDosePresetName] = useState("");
+
+  const todaysWeightRow = (vitalsHistory || []).find((v) => v.dateLabel === indiaDateLabel());
+  const todaysWeight = Number(todaysWeightRow?.weight?.value ?? todaysWeightRow?.weight);
+  const dosePresets = lists.medicationDosePresets || [];
 
   const crossCoverage = bookedDoctor !== session.name;
 
@@ -2557,6 +2595,77 @@ function NewConsultationForm({ patient, session, onCancel, onSave, copyFrom, doc
     });
   }
 
+  function templateSnapshot() {
+    return {
+      complaints: complaints.map((c) => ({ ...c })),
+      findings: [...findings],
+      diagnosis: [...diagnoses],
+      investigations: [...investigations],
+      medications: medications.map((m) => ({ ...m })),
+      instructions: [...instructions],
+      referral: referral ? { ...referral } : { name: "", phone: "" },
+      followUps: followUps.map((f) => ({ ...f })),
+    };
+  }
+
+  function applyTemplate(template) {
+    if (!template) return;
+    const data = template.data || template;
+    setComplaints((data.complaints || []).map((c) => ({ ...c })));
+    setFindings([...(data.findings || [])]);
+    setDiagnoses([...(data.diagnosis || data.diagnoses || [])]);
+    setInvestigations([...(data.investigations || [])]);
+    setMedications((data.medications || []).map((m) => {
+      const rule = findWeightDoseRule(m.name, dosePresets);
+      const ml = calculatePresetMl(rule, todaysWeight);
+      return {
+        ...m,
+        ...(rule ? {
+          dosage: ml || m.dosage || "",
+          doseUnit: "ml",
+          strength: rule.strength || m.strength || "",
+          frequency: rule.frequency || m.frequency || "1",
+          durationDays: rule.days || m.durationDays || "",
+          doseRuleKey: rule.name || ""
+        } : {})
+      };
+    }));
+    setInstructions([...(data.instructions || [])]);
+    setReferral(data.referral ? { ...data.referral } : { name: "", phone: "" });
+    setFollowUps((data.followUps || []).map((f) => ({ ...f })));
+  }
+
+  function persistTemplates(next) {
+    if (!setQuickPickLists) return;
+    setQuickPickLists((prev) => ({ ...prev, consultationTemplates: next }));
+    supabase.from("quick_pick_lists").upsert({ field: "consultationTemplates", items: next }, { onConflict: "field" })
+      .then(({ error }) => { if (error) console.error("Failed to save consultation template", error); });
+  }
+
+  function saveConsultationTemplate() {
+    const name = templateName.trim();
+    if (!name) return;
+    const existing = lists.consultationTemplates || [];
+    const withoutName = existing.filter((t) => String(t.name || "").toLowerCase() !== name.toLowerCase());
+    persistTemplates([...withoutName, { name, data: templateSnapshot(), updatedAt: new Date().toISOString() }]);
+    setTemplateName("");
+    setEditingTemplateName("");
+  }
+
+  function editConsultationTemplate(template) {
+    if (!template) return;
+    applyTemplate(template);
+    setEditingTemplateName(template.name || "");
+    setTemplateName(template.name || "");
+    setShowTemplateManager(true);
+  }
+
+  function deleteConsultationTemplate(name) {
+    const next = (lists.consultationTemplates || []).filter((t) => t.name !== name);
+    persistTemplates(next);
+    if (editingTemplateName === name) { setEditingTemplateName(""); setTemplateName(""); }
+  }
+
   function handleSave() {
     const record = {
       date: indiaDateLabel(),
@@ -2564,7 +2673,7 @@ function NewConsultationForm({ patient, session, onCancel, onSave, copyFrom, doc
       bookedDoctor, consultingDoctor: session.name, consultingDoctorId: session.username,
       complaints: complaints.map((c) => c.manualDuration ? `${c.name} (${c.manualDuration})` : c.durationValue ? `${c.name} (${c.durationValue} ${c.durationUnit})` : c.name).join(", "),
       findings: findings.join(", "), diagnosis: diagnoses.join(", "),
-      medications: medications.map((m) => ({ name: m.name, dosage: m.dosage ? `${m.dosage}${m.doseUnit ? ` ${m.doseUnit}` : ""}`.trim() : "", frequency: m.frequency === customFrequencyKey ? (m.customFrequency || "Custom frequency") : (frequencyOptions.find((f) => f.key === m.frequency)?.label || m.frequency), days: m.durationDays, remark: m.remark || "" })),
+      medications: medications.map((m) => ({ name: m.name, strength: m.strength || (findWeightDoseRule(m.name, dosePresets)?.strength || ""), dosage: m.dosage ? `${m.dosage}${m.doseUnit ? ` ${m.doseUnit}` : ""}`.trim() : "", frequency: m.frequency === customFrequencyKey ? (m.customFrequency || "Custom frequency") : (frequencyOptions.find((f) => f.key === m.frequency)?.label || m.frequency), days: m.durationDays, remark: m.remark || "" })),
       investigations: investigations.join(", "), instructions: instructions.join(", "),
       followUp: followUps.map((f) => `${f.date}${f.reason ? ` — ${f.reason}` : ""}`).join(" | "),
       referral: referral?.name ? { name: referral.name, phone: referral.phone || "" } : null,
@@ -2587,6 +2696,62 @@ function NewConsultationForm({ patient, session, onCancel, onSave, copyFrom, doc
             <span>Pre-filled from a previous consultation ({copyFrom.date}). Review and adjust before saving — nothing has been saved yet.</span>
           </div>
         )}
+
+        <div style={{ margin: "12px 0 16px", padding: 12, border: "1px solid #D9E5DF", borderRadius: 10, background: "#F8FBF9" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+            <b style={{ fontSize: 13, color: "#173E37" }}>Saved consultation templates</b>
+            <select style={{ ...consultStyles.input, flex: 1, minWidth: 180 }} defaultValue="" onChange={(e) => { const t = (lists.consultationTemplates || []).find((x) => x.name === e.target.value); if (t) applyTemplate(t); }}>
+              <option value="">Select template…</option>
+              {(lists.consultationTemplates || []).map((t) => <option key={t.name} value={t.name}>{t.name}</option>)}
+            </select>
+            <button type="button" style={consultStyles.freqChip} onClick={() => setShowTemplateManager((v) => !v)}>{showTemplateManager ? "Close templates" : "Save / edit"}</button>
+            <button type="button" style={consultStyles.freqChip} onClick={() => setShowDoseManager((v) => !v)}>{showDoseManager ? "Close dose presets" : "Drug dose presets"}</button>
+          </div>
+          {showDoseManager && <div style={{ marginTop: 10, padding: 10, background: "#fff", border: "1px solid #E3EAE6", borderRadius: 8 }}>
+            <div style={{ fontSize: 12, color: "#52615C", marginBottom: 8 }}>Enter your own medicine presets. You enter mL/kg, product strength, frequency and days. When a saved medicine is selected, the app uses today's weight to calculate mL and fills the preset frequency/days automatically. Strength is recorded for the prescription; it is not used to derive the mL/kg dose.</div>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(130px, 1fr))", gap: 7 }}>
+              <input style={consultStyles.input} value={dosePresetName} onChange={(e) => setDosePresetName(e.target.value)} placeholder="Drug name" />
+              <input style={consultStyles.input} type="number" min="0" step="any" value={dosePresetMlKg} onChange={(e) => setDosePresetMlKg(e.target.value)} placeholder="Dose mL/kg" />
+              <input style={consultStyles.input} type="number" min="0" step="any" value={dosePresetStrength} onChange={(e) => setDosePresetStrength(e.target.value)} placeholder="Strength (e.g. 250 mg/5 mL)" />
+              <select style={consultStyles.input} value={dosePresetFrequency} onChange={(e) => setDosePresetFrequency(e.target.value)}>{frequencyOptions.map((f) => <option key={f.key} value={f.key}>{f.label}</option>)}</select>
+              <input style={consultStyles.input} type="number" min="0" value={dosePresetDays} onChange={(e) => setDosePresetDays(e.target.value)} placeholder="Days" />
+            </div>
+            <div style={{ display: "flex", gap: 7, flexWrap: "wrap", marginTop: 8 }}>
+              <button type="button" style={{ ...consultStyles.freqChip, ...consultStyles.freqChipActive }} onClick={() => {
+                const name = dosePresetName.trim(); const doseMlKg = Number(dosePresetMlKg); const strength = dosePresetStrength.trim();
+                if (!name || !Number.isFinite(doseMlKg) || doseMlKg <= 0 || !strength) return;
+                const existing = dosePresets || [];
+                const next = [...existing.filter((r) => String(r.name || "").toLowerCase() !== name.toLowerCase()), { name, doseMlKg, strength, frequency: dosePresetFrequency, days: dosePresetDays }];
+                setQuickPickLists?.((prev) => ({ ...prev, medicationDosePresets: next }));
+                supabase.from("quick_pick_lists").upsert({ field: "medicationDosePresets", items: next }, { onConflict: "field" }).then(({ error }) => { if (error) console.error("Failed to save medication dose preset", error); });
+                setDosePresetName(""); setDosePresetMlKg(""); setDosePresetStrength(""); setDosePresetFrequency("1"); setDosePresetDays(""); setEditingDosePresetName("");
+              }}>{editingDosePresetName ? "Update dose preset" : "Save dose preset"}</button>
+              {editingDosePresetName && <button type="button" style={consultStyles.freqChip} onClick={() => { setEditingDosePresetName(""); setDosePresetName(""); setDosePresetMlKg(""); setDosePresetStrength(""); setDosePresetFrequency("1"); setDosePresetDays(""); }}>Cancel edit</button>}
+            </div>
+            {dosePresets.length > 0 && <div style={{ marginTop: 9, display: "flex", flexDirection: "column", gap: 5 }}>
+              {dosePresets.map((r) => <div key={r.name} style={{ display: "flex", alignItems: "center", gap: 7, fontSize: 12, padding: "6px 8px", background: "#F8FBF9", borderRadius: 7, border: "1px solid #E3EAE6" }}>
+                <span style={{ flex: 1, fontWeight: 600 }}>{r.name} · {r.doseMlKg} mL/kg · {r.strength || "strength not set"} · {(frequencyOptions.find((f) => f.key === r.frequency)?.label || r.frequency)} · {r.days || "—"} days</span>
+                <button type="button" style={consultStyles.freqChip} onClick={() => { setEditingDosePresetName(r.name); setDosePresetName(r.name); setDosePresetMlKg(String(r.doseMlKg || "")); setDosePresetStrength(String(r.strength || "")); setDosePresetFrequency(r.frequency || "1"); setDosePresetDays(String(r.days || "")); }}>Edit</button>
+                <button type="button" style={{ ...consultStyles.freqChip, color: "#8A2D2D" }} onClick={() => { const next = dosePresets.filter((x) => x.name !== r.name); setQuickPickLists?.((prev) => ({ ...prev, medicationDosePresets: next })); supabase.from("quick_pick_lists").upsert({ field: "medicationDosePresets", items: next }, { onConflict: "field" }); }}>Delete</button>
+              </div>)}
+            </div>}
+          </div>}
+
+          {showTemplateManager && <div style={{ marginTop: 10 }}>
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+              <input style={{ ...consultStyles.input, flex: 1, minWidth: 180 }} value={templateName} onChange={(e) => setTemplateName(e.target.value)} placeholder="Template name e.g. Viral fever" />
+              <button type="button" style={{ ...consultStyles.freqChip, ...consultStyles.freqChipActive }} onClick={saveConsultationTemplate}>{editingTemplateName ? "Update template" : "Save template"}</button>
+              {editingTemplateName && <button type="button" style={consultStyles.freqChip} onClick={() => { setEditingTemplateName(""); setTemplateName(""); }}>Cancel edit</button>}
+            </div>
+            {(lists.consultationTemplates || []).length > 0 && <div style={{ marginTop: 8, display: "flex", flexDirection: "column", gap: 5 }}>
+              {(lists.consultationTemplates || []).map((t) => <div key={t.name} style={{ display: "flex", alignItems: "center", gap: 7, fontSize: 12, padding: "6px 8px", background: "#fff", borderRadius: 7, border: "1px solid #E3EAE6" }}>
+                <span style={{ flex: 1, fontWeight: 600 }}>{t.name}</span>
+                <button type="button" style={consultStyles.freqChip} onClick={() => editConsultationTemplate(t)}>Edit</button>
+                <button type="button" style={{ ...consultStyles.freqChip, color: "#8A2D2D" }} onClick={() => deleteConsultationTemplate(t.name)}>Delete</button>
+              </div>)}
+            </div>}
+          </div>}
+        </div>
 
         <FieldBlock icon={<Stethoscope size={14} />} label="Booked doctor">
           <select style={consultStyles.input} value={bookedDoctor} onChange={(e) => setBookedDoctor(e.target.value)}>{(doctorNames || []).map((d) => <option key={d} value={d}>{d}</option>)}</select>
@@ -2658,14 +2823,33 @@ function NewConsultationForm({ patient, session, onCancel, onSave, copyFrom, doc
 
         <FieldBlock icon={<Pill size={14} />} label="Medications">
           <Autocomplete options={lists.medication} excluded={medications.map((m) => m.name)} placeholder="Type to search or add…"
-            onSelect={(name) => setMedications((p) => [...p, { name, frequency: "1", durationDays: "", doseUnit: "ml" }])}
-            onAddNew={(name) => { addToMasterList("medication", name); setMedications((p) => [...p, { name, frequency: "1", durationDays: "", doseUnit: "ml" }]); }} />
+            onSelect={(name) => {
+              const rule = findWeightDoseRule(name, dosePresets);
+              const ml = calculatePresetMl(rule, todaysWeight);
+              setMedications((p) => [...p, { name, frequency: rule?.frequency || "1", durationDays: rule?.days || "", doseUnit: "ml", dosage: ml, strength: rule?.strength || "", doseRuleKey: rule?.name || "" }]);
+            }}
+            onAddNew={(name) => {
+              addToMasterList("medication", name);
+              const rule = findWeightDoseRule(name, dosePresets);
+              const ml = calculatePresetMl(rule, todaysWeight);
+              setMedications((p) => [...p, { name, frequency: rule?.frequency || "1", durationDays: rule?.days || "", doseUnit: "ml", dosage: ml, strength: rule?.strength || "", doseRuleKey: rule?.name || "" }]);
+            }} />
           <div style={consultStyles.selectedStack}>
             {medications.map((m, i) => (
               <div key={i} style={consultStyles.medicationCard}>
-                <div style={consultStyles.medicationTopRow}><div style={{ flex: 1, marginRight: 8 }}><input list={`new-med-options-${i}`} value={m.name} onChange={(e) => setMedications((p) => p.map((x, xi) => xi === i ? { ...x, name: e.target.value } : x))} onBlur={() => { if (m.name?.trim()) addToMasterList("medication", m.name); }} style={{ ...consultStyles.medExtraInput, width: "100%" }} placeholder="Medicine name" /><datalist id={`new-med-options-${i}`}>{(lists.medication || []).map((name) => <option key={name} value={name} />)}</datalist></div><button type="button" onClick={() => setMedications((p) => p.filter((_, xi) => xi !== i))} style={consultStyles.removeRowBtn}><X size={13} /></button></div>
+                <div style={consultStyles.medicationTopRow}><div style={{ flex: 1, marginRight: 8 }}><input list={`new-med-options-${i}`} value={m.name} onChange={(e) => {
+                  const name = e.target.value;
+                  const rule = findWeightDoseRule(name, dosePresets);
+                  const ml = calculatePresetMl(rule, todaysWeight);
+                  setMedications((p) => p.map((x, xi) => xi === i ? { ...x, name, doseRuleKey: rule?.name || "", ...(rule ? { dosage: ml, doseUnit: "ml", strength: rule.strength || "", frequency: rule.frequency || "1", durationDays: rule.days || "" } : {}) } : x));
+                }} onBlur={() => { if (m.name?.trim()) addToMasterList("medication", m.name); }} style={{ ...consultStyles.medExtraInput, width: "100%" }} placeholder="Medicine name" /><datalist id={`new-med-options-${i}`}>{(lists.medication || []).map((name) => <option key={name} value={name} />)}</datalist></div><button type="button" onClick={() => setMedications((p) => p.filter((_, xi) => xi !== i))} style={consultStyles.removeRowBtn}><X size={13} /></button></div>
                 <div style={consultStyles.freqChipRow}>{frequencyOptions.map((f) => <button key={f.key} type="button" onClick={() => setMedications((p) => p.map((x, xi) => (xi === i ? { ...x, frequency: f.key, customFrequency: "" } : x)))} style={{ ...consultStyles.freqChip, ...(m.frequency === f.key ? consultStyles.freqChipActive : {}) }}>{f.label}</button>)}<button type="button" onClick={() => setMedications((p) => p.map((x, xi) => (xi === i ? { ...x, frequency: customFrequencyKey } : x)))} style={{ ...consultStyles.freqChip, ...(m.frequency === customFrequencyKey ? consultStyles.freqChipActive : {}) }}>Other / Custom</button></div>
                 {m.frequency === customFrequencyKey && <><Autocomplete options={lists.frequency || []} excluded={[]} placeholder="Type or select frequency (reusable)…" onSelect={(value) => setMedications((p) => p.map((x, xi) => (xi === i ? { ...x, customFrequency: value } : x)))} onAddNew={(value) => { addToMasterList("frequency", value); setMedications((p) => p.map((x, xi) => (xi === i ? { ...x, customFrequency: value } : x))); }} />}{m.customFrequency && <div style={{ fontSize: 12, marginTop: 6, color: "#0B3B36", fontWeight: 700 }}>Selected frequency: {m.customFrequency}</div>}</>}
+                {findWeightDoseRule(m.name, dosePresets) && (
+                  <div style={{ marginTop: 7, padding: "7px 9px", borderRadius: 8, background: "#F4F8F6", border: "1px solid #D9E5DF", fontSize: 11.5, color: "#38504A" }}>
+                    {(() => { const rule = findWeightDoseRule(m.name, dosePresets); const ml = calculatePresetMl(rule, todaysWeight); return todaysWeight > 0 && ml ? <>Today's weight: <b>{todaysWeight} kg</b> · Preset dose: <b>{rule.doseMlKg} mL/kg</b> · Strength: <b>{rule.strength || "—"}</b> · Volume: <b>{ml} mL</b> · {(frequencyOptions.find((f) => f.key === rule.frequency)?.label || rule.frequency)} · {rule.days || "—"} days</> : <b>Today's weight is required for automatic mL calculation.</b>; })()}
+                  </div>
+                )}
                 <div style={consultStyles.medExtraRow}>
                   <input value={m.dosage || ""} onChange={(e) => setMedications((p) => p.map((x, xi) => (xi === i ? { ...x, dosage: e.target.value } : x)))} placeholder="Amount e.g. 5" style={consultStyles.medExtraInput} /><select value={m.doseUnit || "ml"} onChange={(e) => setMedications((p) => p.map((x, xi) => (xi === i ? { ...x, doseUnit: e.target.value } : x)))} style={consultStyles.durationUnitSelect}><option value="tab">Tab</option><option value="ml">ml</option><option value="drops">Drops</option></select>
                   {!(m.frequency === customFrequencyKey && m.customFrequency === "SOS (as needed)") && <><span style={consultStyles.forLabel}>for</span><input type="number" min="0" value={m.durationDays} onChange={(e) => setMedications((p) => p.map((x, xi) => (xi === i ? { ...x, durationDays: e.target.value } : x)))} placeholder="e.g. 5" style={consultStyles.durationNumInput} /><span style={consultStyles.forLabel}>days</span></>}
