@@ -442,7 +442,7 @@ function Shell({ session, onLogout, accounts, setAccounts, refreshAccounts, room
         ) : activeTab === "ipd" ? (
           <IPDRoomDashboardScreen allPatients={allPatients} rooms={rooms} setRooms={setRooms} isAdmin={session.role === "admin"} setPatientHistoryRecords={setPatientHistoryRecords} doctorNames={doctorNames} />
         ) : activeTab === "settings" && session.role === "admin" ? (
-          <ClinicSettings accounts={accounts} setAccounts={setAccounts} refreshAccounts={refreshAccounts} session={session} printSettings={printSettings} setPrintSettings={setPrintSettings} rooms={rooms} setRooms={setRooms} clinicDetails={clinicDetails} setClinicDetails={setClinicDetails} appointmentTypes={appointmentTypes} setAppointmentTypes={setAppointmentTypes} backupData={backupData} />
+          <ClinicSettings accounts={accounts} setAccounts={setAccounts} refreshAccounts={refreshAccounts} session={session} printSettings={printSettings} setPrintSettings={setPrintSettings} rooms={rooms} setRooms={setRooms} clinicDetails={clinicDetails} setClinicDetails={setClinicDetails} appointmentTypes={appointmentTypes} setAppointmentTypes={setAppointmentTypes} quickPickLists={quickPickLists} setQuickPickLists={setQuickPickLists} backupData={backupData} />
         ) : (
           <ComingSoon tabKey={activeTab} navItems={navItems} />
         )}
@@ -2498,12 +2498,10 @@ const initialLists = {
 // and pre-fills the configured frequency/days. No medical dose recommendations are built in.
 // Example shape: { name: "Example syrup", doseMlKg: 0.5, strength: "250 mg/5 mL", frequency: "3", days: "5" }
 function findWeightDoseRule(name, rules) {
-  const q = String(name || "").trim().toLowerCase();
+  const q = String(name || "").trim().replace(/\s+/g, " ").toLowerCase();
   if (!q) return null;
-  return (rules || []).find((rule) => {
-    const n = String(rule?.name || "").trim().toLowerCase();
-    return n && (q === n || q.includes(n) || n.includes(q));
-  }) || null;
+  const normalized = (rules || []).map((rule) => ({ rule, n: String(rule?.name || "").trim().replace(/\s+/g, " ").toLowerCase() })).filter((x) => x.n);
+  return normalized.find((x) => x.n === q)?.rule || normalized.find((x) => q.includes(x.n) || x.n.includes(q))?.rule || null;
 }
 
 function calculatePresetMl(rule, weightKg) {
@@ -2569,13 +2567,6 @@ function NewConsultationForm({ patient, session, onCancel, onSave, copyFrom, doc
   const [templateName, setTemplateName] = useState("");
   const [editingTemplateName, setEditingTemplateName] = useState("");
   const [showTemplateManager, setShowTemplateManager] = useState(true);
-  const [showDoseManager, setShowDoseManager] = useState(true);
-  const [dosePresetName, setDosePresetName] = useState("");
-  const [dosePresetMlKg, setDosePresetMlKg] = useState("");
-  const [dosePresetStrength, setDosePresetStrength] = useState("");
-  const [dosePresetFrequency, setDosePresetFrequency] = useState("1");
-  const [dosePresetDays, setDosePresetDays] = useState("");
-  const [editingDosePresetName, setEditingDosePresetName] = useState("");
 
   const todaysWeightRow = (vitalsHistory || []).find((v) => v.dateLabel === indiaDateLabel());
   const todaysWeight = Number(todaysWeightRow?.weight?.value ?? todaysWeightRow?.weight);
@@ -2698,7 +2689,6 @@ function NewConsultationForm({ patient, session, onCancel, onSave, copyFrom, doc
         )}
 
         <div style={{ margin: "12px 0 16px", padding: 14, border: "2px solid #B8D8CC", borderRadius: 12, background: "#F5FAF7" }}>
-          <div style={{ fontSize: 15, fontWeight: 800, color: "#173E37", marginBottom: 10 }}>Prescription tools</div>
           <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
             <b style={{ fontSize: 13, color: "#173E37" }}>Saved consultation templates</b>
             <select style={{ ...consultStyles.input, flex: 1, minWidth: 180 }} defaultValue="" onChange={(e) => { const t = (lists.consultationTemplates || []).find((x) => x.name === e.target.value); if (t) applyTemplate(t); }}>
@@ -2706,39 +2696,7 @@ function NewConsultationForm({ patient, session, onCancel, onSave, copyFrom, doc
               {(lists.consultationTemplates || []).map((t) => <option key={t.name} value={t.name}>{t.name}</option>)}
             </select>
             <button type="button" style={{ ...consultStyles.freqChip, ...consultStyles.freqChipActive, fontWeight: 800 }} onClick={() => setShowTemplateManager((v) => !v)}>📋 {showTemplateManager ? "Hide templates" : "Consultation templates"}</button>
-            <button type="button" style={{ ...consultStyles.freqChip, ...consultStyles.freqChipActive, fontWeight: 800 }} onClick={() => setShowDoseManager((v) => !v)}>💊 {showDoseManager ? "Hide drug doses" : "Drug dose presets"}</button>
           </div>
-          <div style={{ marginTop: 8, fontSize: 11, color: "#52615C" }}>Templates save common disease consultations. Drug dose presets store your own mL/kg, strength, frequency and days.</div>
-          {showDoseManager && <div style={{ marginTop: 10, padding: 10, background: "#fff", border: "1px solid #E3EAE6", borderRadius: 8 }}>
-            <div style={{ fontSize: 12, color: "#52615C", marginBottom: 8 }}>Enter your own medicine presets. You enter mL/kg, product strength, frequency and days. When a saved medicine is selected, the app uses today's weight to calculate mL and fills the preset frequency/days automatically. Strength is recorded for the prescription; it is not used to derive the mL/kg dose.</div>
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(130px, 1fr))", gap: 7 }}>
-              <input style={consultStyles.input} value={dosePresetName} onChange={(e) => setDosePresetName(e.target.value)} placeholder="Drug name" />
-              <input style={consultStyles.input} type="number" min="0" step="any" value={dosePresetMlKg} onChange={(e) => setDosePresetMlKg(e.target.value)} placeholder="Dose mL/kg" />
-              <input style={consultStyles.input} type="number" min="0" step="any" value={dosePresetStrength} onChange={(e) => setDosePresetStrength(e.target.value)} placeholder="Strength (e.g. 250 mg/5 mL)" />
-              <select style={consultStyles.input} value={dosePresetFrequency} onChange={(e) => setDosePresetFrequency(e.target.value)}>{frequencyOptions.map((f) => <option key={f.key} value={f.key}>{f.label}</option>)}</select>
-              <input style={consultStyles.input} type="number" min="0" value={dosePresetDays} onChange={(e) => setDosePresetDays(e.target.value)} placeholder="Days" />
-            </div>
-            <div style={{ display: "flex", gap: 7, flexWrap: "wrap", marginTop: 8 }}>
-              <button type="button" style={{ ...consultStyles.freqChip, ...consultStyles.freqChipActive }} onClick={() => {
-                const name = dosePresetName.trim(); const doseMlKg = Number(dosePresetMlKg); const strength = dosePresetStrength.trim();
-                if (!name || !Number.isFinite(doseMlKg) || doseMlKg <= 0 || !strength) return;
-                const existing = dosePresets || [];
-                const next = [...existing.filter((r) => String(r.name || "").toLowerCase() !== name.toLowerCase()), { name, doseMlKg, strength, frequency: dosePresetFrequency, days: dosePresetDays }];
-                setQuickPickLists?.((prev) => ({ ...prev, medicationDosePresets: next }));
-                supabase.from("quick_pick_lists").upsert({ field: "medicationDosePresets", items: next }, { onConflict: "field" }).then(({ error }) => { if (error) console.error("Failed to save medication dose preset", error); });
-                setDosePresetName(""); setDosePresetMlKg(""); setDosePresetStrength(""); setDosePresetFrequency("1"); setDosePresetDays(""); setEditingDosePresetName("");
-              }}>{editingDosePresetName ? "Update dose preset" : "Save dose preset"}</button>
-              {editingDosePresetName && <button type="button" style={consultStyles.freqChip} onClick={() => { setEditingDosePresetName(""); setDosePresetName(""); setDosePresetMlKg(""); setDosePresetStrength(""); setDosePresetFrequency("1"); setDosePresetDays(""); }}>Cancel edit</button>}
-            </div>
-            {dosePresets.length > 0 && <div style={{ marginTop: 9, display: "flex", flexDirection: "column", gap: 5 }}>
-              {dosePresets.map((r) => <div key={r.name} style={{ display: "flex", alignItems: "center", gap: 7, fontSize: 12, padding: "6px 8px", background: "#F8FBF9", borderRadius: 7, border: "1px solid #E3EAE6" }}>
-                <span style={{ flex: 1, fontWeight: 600 }}>{r.name} · {r.doseMlKg} mL/kg · {r.strength || "strength not set"} · {(frequencyOptions.find((f) => f.key === r.frequency)?.label || r.frequency)} · {r.days || "—"} days</span>
-                <button type="button" style={consultStyles.freqChip} onClick={() => { setEditingDosePresetName(r.name); setDosePresetName(r.name); setDosePresetMlKg(String(r.doseMlKg || "")); setDosePresetStrength(String(r.strength || "")); setDosePresetFrequency(r.frequency || "1"); setDosePresetDays(String(r.days || "")); }}>Edit</button>
-                <button type="button" style={{ ...consultStyles.freqChip, color: "#8A2D2D" }} onClick={() => { const next = dosePresets.filter((x) => x.name !== r.name); setQuickPickLists?.((prev) => ({ ...prev, medicationDosePresets: next })); supabase.from("quick_pick_lists").upsert({ field: "medicationDosePresets", items: next }, { onConflict: "field" }); }}>Delete</button>
-              </div>)}
-            </div>}
-          </div>}
-
           {showTemplateManager && <div style={{ marginTop: 10 }}>
             <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
               <input style={{ ...consultStyles.input, flex: 1, minWidth: 180 }} value={templateName} onChange={(e) => setTemplateName(e.target.value)} placeholder="Template name e.g. Viral fever" />
@@ -3808,10 +3766,97 @@ const vaxStyles = {
   othersAddBtn: { display: "flex", alignItems: "center", flexShrink: 0, fontSize: 11.5, fontWeight: 700, color: "#fff", background: "#0B3B36", border: "none", borderRadius: 7, padding: "6px 10px", cursor: "pointer" },
 };
 
+function DrugDosePresetsPanel({ quickPickLists, setQuickPickLists }) {
+  const presets = quickPickLists?.medicationDosePresets || [];
+  const [name, setName] = useState("");
+  const [doseMlKg, setDoseMlKg] = useState("");
+  const [strength, setStrength] = useState("");
+  const [frequency, setFrequency] = useState("1");
+  const [days, setDays] = useState("");
+  const [editingName, setEditingName] = useState("");
+  const [message, setMessage] = useState("");
+
+  function resetForm() {
+    setName(""); setDoseMlKg(""); setStrength(""); setFrequency("1"); setDays(""); setEditingName("");
+  }
+  async function savePreset() {
+    const cleanName = name.trim();
+    const dose = Number(doseMlKg);
+    const cleanStrength = strength.trim();
+    if (!cleanName || !Number.isFinite(dose) || dose <= 0 || !cleanStrength) {
+      setMessage("Enter drug name, a positive mL/kg dose, and strength."); return;
+    }
+    const previousName = editingName || "";
+    const next = [...presets.filter((r) => String(r.name || "").toLowerCase() !== cleanName.toLowerCase() && String(r.name || "").toLowerCase() !== previousName.toLowerCase()), {
+      name: cleanName, doseMlKg: dose, strength: cleanStrength, frequency: frequency || "1", days: days || ""
+    }];
+    const existingMeds = quickPickLists?.medication || [];
+    const medicationNext = [...existingMeds.filter((m) => String(m).toLowerCase() !== String(previousName).toLowerCase() && String(m).toLowerCase() !== cleanName.toLowerCase()), cleanName];
+    setQuickPickLists?.((prev) => ({ ...prev, medicationDosePresets: next, medication: medicationNext }));
+    const [doseRes, medRes] = await Promise.all([
+      supabase.from("quick_pick_lists").upsert({ field: "medicationDosePresets", items: next }, { onConflict: "field" }),
+      supabase.from("quick_pick_lists").upsert({ field: "medication", items: medicationNext }, { onConflict: "field" })
+    ]);
+    const error = doseRes.error || medRes.error;
+    if (error) { console.error("Failed to save medication/dose preset", error); setMessage(error.message || "Could not save dose preset."); return; }
+    setMessage(editingName ? "Drug dose preset updated and medicine list refreshed." : "Drug dose preset saved and medicine added to the prescription list.");
+    resetForm();
+  }
+  function editPreset(r) {
+    setEditingName(r.name); setName(r.name); setDoseMlKg(String(r.doseMlKg ?? "")); setStrength(String(r.strength ?? "")); setFrequency(r.frequency || "1"); setDays(String(r.days ?? "")); setMessage("");
+  }
+  async function deletePreset(nameToDelete) {
+    const next = presets.filter((r) => r.name !== nameToDelete);
+    // Keep the medicine searchable even after its dose preset is deleted; only the automatic dose rule is removed.
+    setQuickPickLists?.((prev) => ({ ...prev, medicationDosePresets: next }));
+    const { error } = await supabase.from("quick_pick_lists").upsert({ field: "medicationDosePresets", items: next }, { onConflict: "field" });
+    setMessage(error ? (error.message || "Could not delete preset.") : "Dose preset deleted. The medicine remains in the prescription list.");
+  }
+
+  return (
+    <div style={{ padding: 4 }}>
+      <div style={settingsStyles.header}>
+        <div style={settingsStyles.iconBadge}><Pill size={20} color="#0B3B36" /></div>
+        <div><div style={settingsStyles.eyebrow}>ADMIN · PRESCRIPTION SETTINGS</div><h1 style={settingsStyles.h1}>Drug dose presets</h1><p style={settingsStyles.sub}>Manage the medicines and doctor-entered mL/kg rules used by prescription entry. These are clinic presets; no doses are hard-coded. Saving a preset also adds that medicine to the Doctor prescription medicine list.</p></div>
+      </div>
+      <div style={{ padding: 14, background: "#F5FAF7", border: "1px solid #B8D8CC", borderRadius: 10, marginBottom: 16 }}>
+        <div style={{ fontSize: 12, color: "#52615C", marginBottom: 10 }}>Enter the dose in <b>mL/kg</b>, product strength, frequency and number of days. When a doctor selects the medicine, Niramaya uses the patient's <b>today-only recorded weight</b> to calculate the mL amount. Strength is displayed on the prescription but is not used to calculate volume.</div>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 8 }}>
+          <input style={settingsStyles.input} value={name} onChange={(e) => setName(e.target.value)} placeholder="Drug name" />
+          <input style={settingsStyles.input} type="number" min="0" step="any" value={doseMlKg} onChange={(e) => setDoseMlKg(e.target.value)} placeholder="Dose mL/kg" />
+          <input style={settingsStyles.input} type="text" value={strength} onChange={(e) => setStrength(e.target.value)} placeholder="Strength e.g. 250 mg/5 mL" />
+          <select style={settingsStyles.input} value={frequency} onChange={(e) => setFrequency(e.target.value)}>{frequencyOptions.map((f) => <option key={f.key} value={f.key}>{f.label}</option>)}</select>
+          <input style={settingsStyles.input} type="number" min="0" value={days} onChange={(e) => setDays(e.target.value)} placeholder="Days" />
+        </div>
+        <div style={{ display: "flex", gap: 8, marginTop: 10, flexWrap: "wrap" }}>
+          <button style={settingsStyles.saveBtn} type="button" onClick={savePreset}>{editingName ? "Update dose preset" : "Save dose preset"}</button>
+          {editingName && <button style={settingsStyles.cancelBtn} type="button" onClick={resetForm}>Cancel edit</button>}
+        </div>
+        {message && <div style={{ ...settingsStyles.successBox, marginTop: 10 }}>{message}</div>}
+      </div>
+      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+        {presets.length === 0 && <div style={settingsStyles.sub}>No drug dose presets saved yet.</div>}
+        {presets.map((r) => (
+          <div key={r.name} style={{ ...settingsStyles.staffRow, alignItems: "center" }}>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ fontSize: 13.5, fontWeight: 700, color: "#1B2320" }}>{r.name}</div>
+              <div style={{ fontSize: 12, color: "#7A8380", marginTop: 3 }}>{r.doseMlKg} mL/kg · {r.strength || "Strength not set"} · {(frequencyOptions.find((f) => f.key === r.frequency)?.label || r.frequency || "Frequency not set")} · {r.days || "—"} days</div>
+            </div>
+            <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+              <button style={settingsStyles.editStaffBtn} type="button" onClick={() => editPreset(r)}><Pencil size={12} style={{ marginRight: 5 }} />Edit</button>
+              <button style={settingsStyles.removeStaffBtn} type="button" onClick={() => deletePreset(r.name)}>Delete</button>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 /* ============================================================================
    CLINIC SETTINGS (admin only, gated in Shell)
    ========================================================================== */
-function ClinicSettings({ accounts, setAccounts, refreshAccounts, session, printSettings, setPrintSettings, rooms, setRooms, clinicDetails, setClinicDetails, appointmentTypes, setAppointmentTypes, backupData }) {
+function ClinicSettings({ accounts, setAccounts, refreshAccounts, session, printSettings, setPrintSettings, rooms, setRooms, clinicDetails, setClinicDetails, appointmentTypes, setAppointmentTypes, quickPickLists, setQuickPickLists, backupData }) {
   const [subTab, setSubTab] = useState("details");
   const [draft, setDraft] = useState(clinicDetails);
   const [editing, setEditing] = useState(false);
@@ -3825,6 +3870,7 @@ function ClinicSettings({ accounts, setAccounts, refreshAccounts, session, print
           <button onClick={() => setSubTab("staff")} style={{ ...settingsStyles.subTabBtn, ...(subTab === "staff" ? settingsStyles.subTabBtnActive : {}) }}>Staff Accounts</button>
           <button onClick={() => setSubTab("rooms")} style={{ ...settingsStyles.subTabBtn, ...(subTab === "rooms" ? settingsStyles.subTabBtnActive : {}) }}>Room Setup</button>
           <button onClick={() => setSubTab("apptTypes")} style={{ ...settingsStyles.subTabBtn, ...(subTab === "apptTypes" ? settingsStyles.subTabBtnActive : {}) }}>Appointment Types</button>
+          <button onClick={() => setSubTab("drugDoses")} style={{ ...settingsStyles.subTabBtn, ...(subTab === "drugDoses" ? settingsStyles.subTabBtnActive : {}) }}>Drug Dose Presets</button>
           <button onClick={() => setSubTab("print")} style={{ ...settingsStyles.subTabBtn, ...(subTab === "print" ? settingsStyles.subTabBtnActive : {}) }}>Print Settings</button>
           <button onClick={() => setSubTab("audit")} style={{ ...settingsStyles.subTabBtn, ...(subTab === "audit" ? settingsStyles.subTabBtnActive : {}) }}>Audit Log</button>
           <button onClick={() => setSubTab("backup")} style={{ ...settingsStyles.subTabBtn, ...(subTab === "backup" ? settingsStyles.subTabBtnActive : {}) }}>Data Export / Backup</button>
@@ -3864,6 +3910,7 @@ function ClinicSettings({ accounts, setAccounts, refreshAccounts, session, print
         {subTab === "staff" && <StaffAccountsPanel accounts={accounts} refreshAccounts={refreshAccounts} session={session} />}
         {subTab === "rooms" && <RoomSetupPanel rooms={rooms} setRooms={setRooms} />}
         {subTab === "apptTypes" && <AppointmentTypesPanel appointmentTypes={appointmentTypes} setAppointmentTypes={setAppointmentTypes} />}
+        {subTab === "drugDoses" && <DrugDosePresetsPanel quickPickLists={quickPickLists} setQuickPickLists={setQuickPickLists} />}
         {subTab === "print" && <PrintSettingsPanel printSettings={printSettings} setPrintSettings={setPrintSettings} />}
         {subTab === "audit" && <AuditLogPanel />}
         {subTab === "backup" && <DataExportBackupPanel backupData={backupData} />}
