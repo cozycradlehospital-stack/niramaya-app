@@ -2228,7 +2228,8 @@ function PatientProfileScreen({ patient, onClose, session, printSettings, vaccin
   // vitalsHistory: array of dated entries, newest first. vitalsRecords[patientId] stores this array
   // so both Doctor and Reception read/write the same history (mirrors the vaccination records pattern).
   const [vitalsHistory, setVitalsHistoryLocal] = useState(() => (vitalsRecords && vitalsRecords[patient.id]) || (patient.vitals?.recordedOn ? [patient.vitals] : []));
-  const currentVitals = vitalsHistory[0] || { recordedOn: null, weight: {}, height: {}, headCirc: {}, pr: {}, rr: {}, temp: {}, spo2: {} };
+  const safeVitalsHistory = Array.isArray(vitalsHistory) ? vitalsHistory.filter(Boolean) : [];
+  const currentVitals = safeVitalsHistory[0] || { recordedOn: null, weight: {}, height: {}, headCirc: {}, pr: {}, rr: {}, temp: {}, spo2: {} };
   const [editingVitals, setEditingVitals] = useState(false);
   const [vitalsDraft, setVitalsDraft] = useState(currentVitals);
   function setVitalsHistory(updater) {
@@ -2454,7 +2455,7 @@ function PatientProfileScreen({ patient, onClose, session, printSettings, vaccin
                 </div>
                 {(isDoctor || session.role === "receptionist") ? <button style={ppStyles.editTrigger} onClick={startEditVitals}>Update vitals</button> : <div style={ppStyles.lockedNote}>Vitals can be updated by a doctor or reception login.</div>}
 
-                {vitalsHistory.length > 0 && (
+                {safeVitalsHistory.length > 0 && (
                   <div style={ppStyles.historyTableWrap}>
                     <div style={ppStyles.historyTableTitle}>Vitals history</div>
                     <div style={ppStyles.tableScroll}>
@@ -2473,7 +2474,7 @@ function PatientProfileScreen({ patient, onClose, session, printSettings, vaccin
                           </tr>
                         </thead>
                         <tbody>
-                          {vitalsHistory.map((row, i) => (
+                          {safeVitalsHistory.map((row, i) => (
                             <tr key={i} style={i % 2 === 1 ? ppStyles.trAlt : undefined}>
                               <td style={ppStyles.tdDate}>{row.dateLabel || row.recordedOn}</td>
                               <td style={ppStyles.td}>{row.weight?.value}{row.weight?.value ? <span style={ppStyles.unitTextSmall}> {row.weight.unit}</span> : null}</td>
@@ -3573,7 +3574,7 @@ function GrowthChartMetric({ patient, vitalsHistory, metric }) {
   const shortLabel = isHeadCirc ? "HC/Age" : (isWeight ? "Wt/Age" : "Ht/Age");
   const rawHistory = (vitalsHistory && vitalsHistory.length > 0) ? vitalsHistory : (patient.vitals ? [patient.vitals] : []);
   const maxAge = isHeadCirc ? 60 : 216;
-  const points = rawHistory.map(row => ({ age: ageInMonths(patient.dob, row.dateISO || undefined), value: parseFloat(row[metric]?.value) }))
+  const points = rawHistory.filter(Boolean).map(row => ({ age: ageInMonths(patient.dob, row.dateISO || undefined), value: parseFloat(row?.[metric]?.value) }))
     .filter(p => !isNaN(p.value) && p.age >= 0 && p.age <= maxAge).sort((a,b) => a.age-b.age);
 
   if (points.length === 0) {
@@ -3586,8 +3587,9 @@ function GrowthChartMetric({ patient, vitalsHistory, metric }) {
   // weight/height; 0–5 years for head circumference). Reference data are shown
   // as five SD curves: −2 SD, −1 SD, Median, +1 SD, +2 SD. Patient observations
   // are intentionally dots only — never connected by a patient line.
-  const baseRef = refTable[sexKey].filter(r => r.age <= maxAge).sort((a,b) => a.age-b.age);
-  const ref = baseRef.length ? baseRef : (refTable[sexKey] || []);
+  const sexRef = Array.isArray(refTable?.[sexKey]) ? refTable[sexKey] : [];
+  const baseRef = sexRef.filter(r => r && Number.isFinite(Number(r.age)) && r.age <= maxAge).sort((a,b) => a.age-b.age);
+  const ref = baseRef.length ? baseRef : sexRef;
   if (!ref.length) {
     return <div style={{ ...ppStyles.growthBox, display: "flex", alignItems: "center", justifyContent: "center", textAlign: "center", padding: 4 }}>
       <div style={{ fontSize: 7.5, color: "#B0B5B1" }}>{shortLabel}<br />reference data unavailable</div>
