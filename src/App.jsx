@@ -327,6 +327,7 @@ function LoginScreen({ onLogin }) {
 function Shell({ session, onLogout, accounts, setAccounts, refreshAccounts, rooms, setRooms, clinicDetails, setClinicDetails, quickPickLists, setQuickPickLists, appointmentTypes, setAppointmentTypes, printSettings, setPrintSettings }) {
   const [activeTab, setActiveTab] = useState(navConfig[session.role][0].key);
   const [selectedPatient, setSelectedPatient] = useState(null);
+  const [appointmentPatient, setAppointmentPatient] = useState(null);
   // SINGLE source of truth for every appointment — booked (Appointment Desk), walk-in,
   // and emergency (Reception). One array, shared by all three screens via props, so a
   // booking, reschedule, cancellation, walk-in add, or check-in updates state at this
@@ -399,6 +400,12 @@ function Shell({ session, onLogout, accounts, setAccounts, refreshAccounts, room
     const found = allPatients.find((p) => p.id === id);
     setSelectedPatient(found || { id, name: "Unknown" });
   }
+  function bookAppointmentFromProfile(patient) {
+    if (session.role !== "appointment") return;
+    setAppointmentPatient(patient);
+    setSelectedPatient(null);
+    setActiveTab("appointments");
+  }
 
   return (
     <div style={styles.shellPage}>
@@ -432,6 +439,7 @@ function Shell({ session, onLogout, accounts, setAccounts, refreshAccounts, room
             quickPickLists={quickPickLists}
             setQuickPickLists={setQuickPickLists}
             onUpdatePatient={updatePatient}
+            onBookAppointment={session.role === "appointment" ? () => bookAppointmentFromProfile(selectedPatient) : null}
           />
         ) : activeTab === "dashboard" ? (
           session.role === "receptionist"
@@ -440,7 +448,7 @@ function Shell({ session, onLogout, accounts, setAccounts, refreshAccounts, room
         ) : activeTab === "patients" ? (
           <PatientsTab onSelectPatient={openPatient} patients={allPatients} onAddPatient={addPatient} />
         ) : activeTab === "appointments" ? (
-          <AppointmentBookingScreen allPatients={allPatients} appointments={appointments} setAppointments={setAppointments} doctorNames={doctorNames} appointmentTypes={appointmentTypes} patientHistoryRecords={patientHistoryRecords} setPatientHistoryRecords={setPatientHistoryRecords} onRefreshData={refreshClinicData} />
+          <AppointmentBookingScreen allPatients={allPatients} appointments={appointments} setAppointments={setAppointments} doctorNames={doctorNames} appointmentTypes={appointmentTypes} patientHistoryRecords={patientHistoryRecords} setPatientHistoryRecords={setPatientHistoryRecords} onRefreshData={refreshClinicData} initialPatient={appointmentPatient} onInitialPatientConsumed={() => setAppointmentPatient(null)} />
         ) : activeTab === "ipd" ? (
           <IPDRoomDashboardScreen allPatients={allPatients} rooms={rooms} setRooms={setRooms} isAdmin={session.role === "admin"} setPatientHistoryRecords={setPatientHistoryRecords} doctorNames={doctorNames} />
         ) : activeTab === "settings" && session.role === "admin" ? (
@@ -1216,7 +1224,7 @@ function nextApptId() {
 
 const seedScheduledAppointments = [];
 
-function AppointmentBookingScreen({ allPatients, appointments, setAppointments, doctorNames, appointmentTypes, patientHistoryRecords, setPatientHistoryRecords, onRefreshData }) {
+function AppointmentBookingScreen({ allPatients, appointments, setAppointments, doctorNames, appointmentTypes, patientHistoryRecords, setPatientHistoryRecords, onRefreshData, initialPatient, onInitialPatientConsumed }) {
   const [selectedDate, setSelectedDate] = useState(todayISO());
   const [showBookModal, setShowBookModal] = useState(false);
   const [prefillSlot, setPrefillSlot] = useState(null);
@@ -1379,6 +1387,8 @@ function AppointmentBookingScreen({ allPatients, appointments, setAppointments, 
       {showBookModal && (
         <BookAppointmentModal
           allPatients={allPatients}
+          initialPatient={initialPatient}
+          onInitialPatientConsumed={onInitialPatientConsumed}
           initialDate={selectedDate}
           initialSlot={prefillSlot}
           countForSlot={countForSlot}
@@ -1403,15 +1413,32 @@ function AppointmentBookingScreen({ allPatients, appointments, setAppointments, 
   );
 }
 
-function BookAppointmentModal({ allPatients, initialDate, initialSlot, countForSlot, onCancel, onConfirm, doctorNames, appointmentTypes }) {
+function BookAppointmentModal({ allPatients, initialPatient, onInitialPatientConsumed, initialDate, initialSlot, countForSlot, onCancel, onConfirm, doctorNames, appointmentTypes }) {
   const [date, setDate] = useState(initialDate);
   const [query, setQuery] = useState("");
-  const [selectedPatient, setSelectedPatient] = useState(null);
+  const [selectedPatient, setSelectedPatient] = useState(initialPatient || null);
   const [doctor, setDoctor] = useState((doctorNames && doctorNames[0]) || "");
   const [appointmentType, setAppointmentType] = useState((appointmentTypes && appointmentTypes[0]) || "New Consultation");
   const [slot, setSlot] = useState(initialSlot || DAY_SLOTS[20]);
 
-  const results = allPatients.filter((p) => !query.trim() || p.name.toLowerCase().includes(query.toLowerCase()) || p.phone.includes(query) || p.id.toLowerCase().includes(query.toLowerCase()));
+  useEffect(() => {
+    if (initialPatient) {
+      setSelectedPatient(initialPatient);
+      if (onInitialPatientConsumed) onInitialPatientConsumed();
+    }
+  }, [initialPatient]);
+
+  const results = (() => {
+    const q = query.trim().toLowerCase();
+    if (!q) return [];
+    const qDigits = query.replace(/[^\d]/g, "");
+    return allPatients.filter((p) =>
+      p.name.toLowerCase().includes(q) ||
+      String(p.phone || "").includes(q) ||
+      p.id.toLowerCase().includes(q) ||
+      (qDigits.length > 0 && toDDMMYY(p.dob).startsWith(qDigits))
+    );
+  })();
 
   function handleSubmit() {
     if (!selectedPatient) return;
@@ -1434,7 +1461,7 @@ function BookAppointmentModal({ allPatients, initialDate, initialSlot, countForS
           <div style={apptStyles.selectedPatientRow}><span>{selectedPatient.name} <span style={apptStyles.idTagSmall}>{selectedPatient.id}</span></span><button style={apptStyles.changeBtn} onClick={() => setSelectedPatient(null)}>Change</button></div>
         ) : (
           <>
-            <input style={apptStyles.modalInput} value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search by name, phone, or ID…" />
+            <input style={apptStyles.modalInput} value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search by name, phone, ID, or DOB (ddmmyy)…" />
             <div style={apptStyles.patientResultsList}>
               {results.map((p) => <div key={p.id} style={apptStyles.patientResultRow} onClick={() => setSelectedPatient(p)}>{p.name} <span style={apptStyles.idTagSmall}>{p.id}</span></div>)}
             </div>
@@ -2194,9 +2221,9 @@ const statusColors = {
   "not-due": { bg: "#F1F1EF", border: "#DEDDD6", text: "#8A928F", label: "Not yet due" },
 };
 
-function PatientProfileScreen({ patient, onClose, session, printSettings, vaccinationRecords, setVaccinationRecords, vitalsRecords, setVitalsRecords, patientHistoryRecords, setPatientHistoryRecords, doctorNames, clinicDetails, quickPickLists, setQuickPickLists, onUpdatePatient }) {
+function PatientProfileScreen({ patient, onClose, session, printSettings, vaccinationRecords, setVaccinationRecords, vitalsRecords, setVitalsRecords, patientHistoryRecords, setPatientHistoryRecords, doctorNames, clinicDetails, quickPickLists, setQuickPickLists, onUpdatePatient, onBookAppointment }) {
   const [tab, setTab] = useState("profile");
-  const role = session.role === "receptionist" ? "receptionist" : "doctor";
+  const role = session.role;
   const isDoctor = session.role === "doctor";
   // vitalsHistory: array of dated entries, newest first. vitalsRecords[patientId] stores this array
   // so both Doctor and Reception read/write the same history (mirrors the vaccination records pattern).
@@ -2938,7 +2965,12 @@ function Autocomplete({ options, excluded = [], placeholder, onSelect, onAddNew 
   useEffect(() => { function h(e) { if (wrapRef.current && !wrapRef.current.contains(e.target)) setOpen(false); } document.addEventListener("mousedown", h); return () => document.removeEventListener("mousedown", h); }, []);
   const available = options.filter((o) => !excluded.includes(o));
   const q = query.trim().toLowerCase();
-  const matches = q ? available.filter((o) => o.toLowerCase().startsWith(q)) : available;
+  const queryWords = q.split(/\s+/).filter(Boolean);
+  const matches = q ? available.filter((o) => {
+    const value = String(o).toLowerCase();
+    if (value.startsWith(q)) return true;
+    return queryWords.every((word) => value.includes(word));
+  }) : [];
   const exactExists = available.some((o) => o.toLowerCase() === q);
   function selectOption(name) { onSelect(name); setQuery(""); setOpen(false); }
   function addNew() { const name = query.trim(); if (!name) return; onAddNew(name); setQuery(""); setOpen(false); }
