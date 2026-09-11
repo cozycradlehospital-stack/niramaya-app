@@ -2568,8 +2568,8 @@ function NewConsultationForm({ patient, session, onCancel, onSave, copyFrom, doc
   const [followUpReason, setFollowUpReason] = useState("");
   const [templateName, setTemplateName] = useState("");
   const [editingTemplateName, setEditingTemplateName] = useState("");
-  const [showTemplateManager, setShowTemplateManager] = useState(false);
-  const [showDoseManager, setShowDoseManager] = useState(false);
+  const [showTemplateManager, setShowTemplateManager] = useState(true);
+  const [showDoseManager, setShowDoseManager] = useState(true);
   const [dosePresetName, setDosePresetName] = useState("");
   const [dosePresetMlKg, setDosePresetMlKg] = useState("");
   const [dosePresetStrength, setDosePresetStrength] = useState("");
@@ -2697,16 +2697,18 @@ function NewConsultationForm({ patient, session, onCancel, onSave, copyFrom, doc
           </div>
         )}
 
-        <div style={{ margin: "12px 0 16px", padding: 12, border: "1px solid #D9E5DF", borderRadius: 10, background: "#F8FBF9" }}>
+        <div style={{ margin: "12px 0 16px", padding: 14, border: "2px solid #B8D8CC", borderRadius: 12, background: "#F5FAF7" }}>
+          <div style={{ fontSize: 15, fontWeight: 800, color: "#173E37", marginBottom: 10 }}>Prescription tools</div>
           <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
             <b style={{ fontSize: 13, color: "#173E37" }}>Saved consultation templates</b>
             <select style={{ ...consultStyles.input, flex: 1, minWidth: 180 }} defaultValue="" onChange={(e) => { const t = (lists.consultationTemplates || []).find((x) => x.name === e.target.value); if (t) applyTemplate(t); }}>
               <option value="">Select template…</option>
               {(lists.consultationTemplates || []).map((t) => <option key={t.name} value={t.name}>{t.name}</option>)}
             </select>
-            <button type="button" style={consultStyles.freqChip} onClick={() => setShowTemplateManager((v) => !v)}>{showTemplateManager ? "Close templates" : "Save / edit"}</button>
-            <button type="button" style={consultStyles.freqChip} onClick={() => setShowDoseManager((v) => !v)}>{showDoseManager ? "Close dose presets" : "Drug dose presets"}</button>
+            <button type="button" style={{ ...consultStyles.freqChip, ...consultStyles.freqChipActive, fontWeight: 800 }} onClick={() => setShowTemplateManager((v) => !v)}>📋 {showTemplateManager ? "Hide templates" : "Consultation templates"}</button>
+            <button type="button" style={{ ...consultStyles.freqChip, ...consultStyles.freqChipActive, fontWeight: 800 }} onClick={() => setShowDoseManager((v) => !v)}>💊 {showDoseManager ? "Hide drug doses" : "Drug dose presets"}</button>
           </div>
+          <div style={{ marginTop: 8, fontSize: 11, color: "#52615C" }}>Templates save common disease consultations. Drug dose presets store your own mL/kg, strength, frequency and days.</div>
           {showDoseManager && <div style={{ marginTop: 10, padding: 10, background: "#fff", border: "1px solid #E3EAE6", borderRadius: 8 }}>
             <div style={{ fontSize: 12, color: "#52615C", marginBottom: 8 }}>Enter your own medicine presets. You enter mL/kg, product strength, frequency and days. When a saved medicine is selected, the app uses today's weight to calculate mL and fills the preset frequency/days automatically. Strength is recorded for the prescription; it is not used to derive the mL/kg dose.</div>
             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(130px, 1fr))", gap: 7 }}>
