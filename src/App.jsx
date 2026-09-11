@@ -246,6 +246,7 @@ export default function App() {
   useEffect(() => { if (session) { loadAccounts(); loadReferenceData(); } }, [session?.id]);
 
   async function handleLogout() {
+    await waitForPendingWrites();
     await supabase.auth.signOut();
     setSession(null);
   }
@@ -410,7 +411,8 @@ function Shell({ session, onLogout, accounts, setAccounts, refreshAccounts, room
         </div>
       </div>
 
-      <div style={styles.content}>
+      <div className="shell-body">
+      <div style={styles.content} className="shell-content">
         {!dataLoaded ? (
           <div style={{ padding: 40, textAlign: "center", color: "#8A928F", fontSize: 13 }}>Loading clinic data…</div>
         ) : selectedPatient ? (
@@ -449,17 +451,48 @@ function Shell({ session, onLogout, accounts, setAccounts, refreshAccounts, room
       </div>
 
       {!selectedPatient && (
-        <div style={styles.bottomNav} className="no-print">
+        <div style={styles.bottomNav} className="bottom-nav no-print">
           {navItems.map((item) => {
             const Icon = item.icon, active = activeTab === item.key;
             return (
-              <button key={item.key} onClick={() => setActiveTab(item.key)} style={{ ...styles.navBtn, ...(active ? styles.navBtnActive : {}) }}>
-                <Icon size={19} /><span style={styles.navLabel}>{item.label}</span>
+              <button key={item.key} onClick={() => setActiveTab(item.key)} style={{ ...styles.navBtn, ...(active ? styles.navBtnActive : {}) }} className="nav-btn">
+                <Icon size={19} /><span style={styles.navLabel} className="nav-label">{item.label}</span>
               </button>
             );
           })}
         </div>
       )}
+      </div>
+
+      {/* Desktop (>=900px): nav moves from a bottom bar to a left sidebar.
+          Mobile is untouched — same bottom bar, same tabs, just layout. */}
+      <style>{`
+        .shell-body { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+        @media (min-width: 900px) {
+          .shell-body { flex-direction: row-reverse; }
+          .bottom-nav {
+            position: static !important;
+            flex-direction: column !important;
+            width: 220px;
+            min-width: 220px;
+            height: auto !important;
+            border-top: none !important;
+            border-right: 1px solid #E8E6DF;
+            padding: 16px 10px !important;
+            gap: 4px;
+          }
+          .bottom-nav .nav-btn {
+            flex-direction: row !important;
+            justify-content: flex-start !important;
+            width: 100%;
+            padding: 10px 12px !important;
+            border-radius: 8px;
+            gap: 10px !important;
+          }
+          .bottom-nav .nav-label { font-size: 13px !important; }
+          .shell-content { padding-bottom: 24px !important; }
+        }
+      `}</style>
     </div>
   );
 }
@@ -748,12 +781,17 @@ function ReceptionDashboardScreen({ onSelectPatient, allPatients, appointments, 
           : [newEntry, ...prevHistory];
         return { ...recs, [patientId]: nextHistory };
       });
-      if (existingToday?.dbId) {
-        const { error } = await supabase.from("vitals").update(vitalsToDb(newEntry, patientId, session?.id)).eq("id", existingToday.dbId);
-        if (error) console.error("Failed to update vitals", error);
-      } else {
-        const { error } = await supabase.from("vitals").insert(vitalsToDb(newEntry, patientId, session?.id));
-        if (error) console.error("Failed to save vitals", error);
+      beginWrite();
+      try {
+        if (existingToday?.dbId) {
+          const { error } = await supabase.from("vitals").update(vitalsToDb(newEntry, patientId, session?.id)).eq("id", existingToday.dbId);
+          if (error) console.error("Failed to update vitals", error);
+        } else {
+          const { error } = await supabase.from("vitals").insert(vitalsToDb(newEntry, patientId, session?.id));
+          if (error) console.error("Failed to save vitals", error);
+        }
+      } finally {
+        endWrite();
       }
     }
     setCheckInFor(null);
@@ -1107,6 +1145,18 @@ function consultationToDb(h, patientId) {
     complaints: rx.complaints || null, findings: rx.findings || null, medications: rx.medications || null,
     investigations: rx.investigations || null, instructions: rx.instructions || null, follow_up: rx.followUp || null,
   };
+}
+
+// Tracks in-flight Supabase writes so logout can wait for them instead of
+// racing the network request (was causing vitals entered right before
+// logout to silently not save).
+let pendingWriteCount = 0;
+function beginWrite() { pendingWriteCount++; }
+function endWrite() { pendingWriteCount = Math.max(0, pendingWriteCount - 1); }
+async function waitForPendingWrites() {
+  while (pendingWriteCount > 0) {
+    await new Promise((r) => setTimeout(r, 100));
+  }
 }
 
 const roomFromDb = (r) => ({ number: r.number, type: r.type, status: r.status, patient: r.patient_name, patientId: r.patient_id, doctor: r.doctor, fileNumber: r.file_number, admitDate: r.admit_date });
@@ -2237,12 +2287,17 @@ function PatientProfileScreen({ patient, onClose, session, printSettings, vaccin
     setEditingVitals(false);
     // Upsert-by-day: same "one entry per calendar day" rule the UI already enforces,
     // mirrored server-side so a doctor and reception editing the same day don't create duplicates.
-    if (existingToday?.dbId) {
-      const { error } = await supabase.from("vitals").update(vitalsToDb(newEntry, patient.id, session.id)).eq("id", existingToday.dbId);
-      if (error) console.error("Failed to update vitals", error);
-    } else {
-      const { error } = await supabase.from("vitals").insert(vitalsToDb(newEntry, patient.id, session.id));
-      if (error) console.error("Failed to save vitals", error);
+    beginWrite();
+    try {
+      if (existingToday?.dbId) {
+        const { error } = await supabase.from("vitals").update(vitalsToDb(newEntry, patient.id, session.id)).eq("id", existingToday.dbId);
+        if (error) console.error("Failed to update vitals", error);
+      } else {
+        const { error } = await supabase.from("vitals").insert(vitalsToDb(newEntry, patient.id, session.id));
+        if (error) console.error("Failed to save vitals", error);
+      }
+    } finally {
+      endWrite();
     }
   }
 
