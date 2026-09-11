@@ -364,12 +364,14 @@ function Shell({ session, onLogout, accounts, setAccounts, refreshAccounts, room
     const groupedVitals = groupByPatient(vitalsRes.data || [], vitalsFromDb, "dateISO");
     Object.keys(groupedVitals).forEach((pid) => {
       const byDate = new Map();
-      groupedVitals[pid].forEach((v) => {
-        const key = v.dateLabel || indiaDateLabel(new Date(v.dateISO));
+      (Array.isArray(groupedVitals[pid]) ? groupedVitals[pid] : []).filter(Boolean).forEach((v) => {
+        const key = v.dateLabel || v.dateISO || v.dbId || `legacy-${byDate.size}`;
         const current = byDate.get(key);
-        if (!current || new Date(v.dateISO) >= new Date(current.dateISO)) byDate.set(key, v);
+        const vd = v.dateISO ? new Date(v.dateISO).getTime() : 0;
+        const cd = current?.dateISO ? new Date(current.dateISO).getTime() : 0;
+        if (!current || vd >= cd) byDate.set(key, v);
       });
-      groupedVitals[pid] = [...byDate.values()].sort((a,b) => new Date(b.dateISO) - new Date(a.dateISO));
+      groupedVitals[pid] = [...byDate.values()].sort((a,b) => (new Date(b.dateISO || 0).getTime()) - (new Date(a.dateISO || 0).getTime()));
     });
     setVitalsRecords(groupedVitals);
     setPatientHistoryRecords(groupByPatient(consultRes.data || [], consultationFromDb, null));
@@ -1119,18 +1121,25 @@ const appointmentToDb = (a) => ({
 });
 
 const VITALS_UNITS = { weight: "kg", height: "cm", headCirc: "cm", pr: "bpm", rr: "/min", temp: "°F", spo2: "%" };
-const vitalsFromDb = (r) => ({
-  dbId: r.id,
-  weight: { value: r.weight ?? "", unit: VITALS_UNITS.weight },
-  height: { value: r.height ?? "", unit: VITALS_UNITS.height },
-  headCirc: { value: r.head_circ ?? "", unit: VITALS_UNITS.headCirc },
-  pr: { value: r.pr ?? "", unit: VITALS_UNITS.pr },
-  rr: { value: r.rr ?? "", unit: VITALS_UNITS.rr },
-  temp: { value: r.temp ?? "", unit: VITALS_UNITS.temp },
-  spo2: { value: r.spo2 ?? "", unit: VITALS_UNITS.spo2 },
-  dateLabel: r.date_label, dateISO: r.recorded_at,
-  recordedOn: indiaDateTimeLabel(new Date(r.recorded_at)),
-});
+const vitalsFromDb = (r) => {
+  const row = r && typeof r === "object" ? r : {};
+  const rawDate = row.recorded_at || row.dateISO || row.recordedOn || null;
+  const parsedDate = rawDate ? new Date(rawDate) : null;
+  const validDate = parsedDate && !Number.isNaN(parsedDate.getTime());
+  return {
+    dbId: row.id || null,
+    weight: { value: row.weight ?? "", unit: VITALS_UNITS.weight },
+    height: { value: row.height ?? "", unit: VITALS_UNITS.height },
+    headCirc: { value: row.head_circ ?? row.headCirc ?? "", unit: VITALS_UNITS.headCirc },
+    pr: { value: row.pr ?? "", unit: VITALS_UNITS.pr },
+    rr: { value: row.rr ?? "", unit: VITALS_UNITS.rr },
+    temp: { value: row.temp ?? "", unit: VITALS_UNITS.temp },
+    spo2: { value: row.spo2 ?? "", unit: VITALS_UNITS.spo2 },
+    dateLabel: row.date_label || (validDate ? indiaDateLabel(parsedDate) : ""),
+    dateISO: validDate ? parsedDate.toISOString() : "",
+    recordedOn: row.recorded_on || (validDate ? indiaDateTimeLabel(parsedDate) : ""),
+  };
+};
 // Vitals fields arrive shaped as { value, unit } (from the entry forms) — pull out
 // the numeric value before sending to Postgres numeric columns, which reject objects.
 const numVal = (f) => {
@@ -2370,10 +2379,18 @@ function PatientProfileScreen({ patient, onClose, session, printSettings, vaccin
         supabase.from("vaccination_records").select("*").eq("patient_id", patient.id).maybeSingle(),
       ]);
       if (cancelled) return;
-      if (vitalsRes.data) {
-        const rawMapped = vitalsRes.data.map(vitalsFromDb).sort((a, b) => new Date(b.dateISO) - new Date(a.dateISO));
+      if (Array.isArray(vitalsRes.data)) {
+        const rawMapped = vitalsRes.data.map(vitalsFromDb).filter((v) => v && (v.dateISO || v.dateLabel || v.recordedOn));
+        rawMapped.sort((a, b) => {
+          const da = a.dateISO ? new Date(a.dateISO).getTime() : 0;
+          const db = b.dateISO ? new Date(b.dateISO).getTime() : 0;
+          return db - da;
+        });
         const byDate = new Map();
-        rawMapped.forEach((v) => { const key = v.dateLabel || indiaDateLabel(new Date(v.dateISO)); if (!byDate.has(key)) byDate.set(key, v); });
+        rawMapped.forEach((v) => {
+          const key = v.dateLabel || v.dateISO || v.dbId || `legacy-${byDate.size}`;
+          if (!byDate.has(key)) byDate.set(key, v);
+        });
         const mapped = [...byDate.values()];
         setVitalsHistoryLocal(mapped);
         if (setVitalsRecords) setVitalsRecords((recs) => ({ ...recs, [patient.id]: mapped }));
@@ -3241,17 +3258,25 @@ function PrescriptionViewer({ entry, patient, onBack, printSettings, vaxList, vi
             })()}
             {ps.includeFollowUp && <RxSection label="Follow-up" value={rx.followUp} />}
             {rx.referral?.name && <RxSection label="Referral" value={`${rx.referral.name}${rx.referral.phone ? ` — ${rx.referral.phone}` : ""}`} />}
-            {ps.includeGrowthChart && ageInMonths(patient.dob) <= 216 && (
-              <div style={ppStyles.rxSectionBlock}>
-                <div style={ppStyles.rxSectionLabel}>Growth Chart</div>
-                <GrowthChartSVG patient={patient} vitalsHistory={vitalsHistory} />
-              </div>
-            )}
-            <div style={ppStyles.rxFooterSignature}>
+            {(ps.includeGrowthChart && ageInMonths(patient.dob) <= 216) ? (
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-end", gap: 10, padding: "0 20px", marginTop: 4, marginBottom: 4 }}>
+                <div style={{ flex: "0 0 auto" }}>
+                  <div style={ppStyles.rxSectionLabel}>Growth Chart</div>
+                  <GrowthChartSVG patient={patient} vitalsHistory={vitalsHistory} />
+                </div>
+                <div style={{ ...ppStyles.rxFooterSignature, margin: 0, paddingTop: 0, borderTop: "none", flex: "0 0 auto" }}>
               <div style={ppStyles.rxSignatureLine} />
               <div style={ppStyles.rxSignatureName}>{entry.consultingDoctor || entry.doctor}</div>
-              <div style={ppStyles.rxSignatureSub}>Consulting Doctor</div>
-            </div>
+                  <div style={ppStyles.rxSignatureSub}>Consulting Doctor</div>
+                </div>
+              </div>
+            ) : (
+              <div style={ppStyles.rxFooterSignature}>
+                <div style={ppStyles.rxSignatureLine} />
+                <div style={ppStyles.rxSignatureName}>{entry.consultingDoctor || entry.doctor}</div>
+                <div style={ppStyles.rxSignatureSub}>Consulting Doctor</div>
+              </div>
+            )}
             <button style={{ ...ppStyles.editTrigger, margin: "0 20px" }} className="no-print" onClick={() => { setDraft({ ...rx, medications: (rx.medications || []).map((m) => ({ ...m, dosage: stripDoseUnit(m.dosage), doseUnit: m.doseUnit || inferDoseUnit(m.dosage) })) }); setEditing(true); }}>Edit prescription</button>
           </div>
         )}
@@ -3529,7 +3554,7 @@ const ppStyles = {
   followUpBtn: { display: "flex", alignItems: "center", justifyContent: "center", background: "#E7F0FA", color: "#1D5A96", border: "1px solid #B8D4EF", borderRadius: 8, padding: "11px 14px", fontSize: 13, fontWeight: 600, cursor: "pointer", whiteSpace: "nowrap" },
   followUpInlineBtn: { fontSize: 11, fontWeight: 600, color: "#1D5A96", background: "#E7F0FA", border: "1px solid #B8D4EF", borderRadius: 7, padding: "6px 10px", cursor: "pointer", whiteSpace: "nowrap" },
   growthPlaceholder: { border: "1px dashed #B0B5B1", borderRadius: 8, padding: "20px 12px", textAlign: "center", fontSize: 11.5, color: "#8A928F", fontStyle: "italic" },
-  growthBox: { width: "1in", height: "1in", border: "1px dashed #DCD9D0", borderRadius: 6, boxSizing: "border-box" },
+  growthBox: { width: "1.5in", height: "1.5in", border: "1px dashed #DCD9D0", borderRadius: 6, boxSizing: "border-box", flexShrink: 0 },
   rxListRow: { display: "flex", alignItems: "center", gap: 10, background: "#F6F5F1", border: "1px solid #EEECE5", borderRadius: 10, padding: "11px 12px", cursor: "pointer" },
   backBtnPlain: { background: "none", border: "none", fontSize: 13, fontWeight: 600, color: "#0B3B36", cursor: "pointer", padding: 0, marginBottom: 12, display: "block" },
   rxViewerHeader: { display: "flex", justifyContent: "space-between", alignItems: "center", padding: "20px 20px 0" },
@@ -3687,7 +3712,7 @@ function GrowthChartMetric({ patient, vitalsHistory, metric }) {
 function GrowthChartSVG({ patient, vitalsHistory }) {
   const ageMonths = ageInMonths(patient.dob);
   return (
-    <div style={{ display: "flex", flexDirection: "row", flexWrap: "wrap", gap: 10 }}>
+    <div style={{ display: "flex", flexDirection: "row", flexWrap: "nowrap", gap: 4, alignItems: "flex-end", flexShrink: 0 }}>
       {ageMonths <= 60 ? <>
         <GrowthChartMetric patient={patient} vitalsHistory={vitalsHistory} metric="weight" />
         <GrowthChartMetric patient={patient} vitalsHistory={vitalsHistory} metric="height" />
