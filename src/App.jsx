@@ -783,13 +783,10 @@ function ReceptionDashboardScreen({ onSelectPatient, allPatients, appointments, 
       });
       beginWrite();
       try {
-        if (existingToday?.dbId) {
-          const { error } = await supabase.from("vitals").update(vitalsToDb(newEntry, patientId, session?.id)).eq("id", existingToday.dbId);
-          if (error) console.error("Failed to update vitals", error);
-        } else {
-          const { error } = await supabase.from("vitals").insert(vitalsToDb(newEntry, patientId, session?.id));
-          if (error) console.error("Failed to save vitals", error);
-        }
+        const { error } = await supabase
+          .from("vitals")
+          .upsert(vitalsToDb(newEntry, patientId, session?.id), { onConflict: "patient_id,recorded_date" });
+        if (error) console.error("Failed to save vitals", error);
       } finally {
         endWrite();
       }
@@ -1136,6 +1133,7 @@ const numVal = (f) => {
 };
 const vitalsToDb = (v, patientId, recordedBy) => ({
   patient_id: patientId, recorded_by: recordedBy || null, date_label: v.dateLabel,
+  recorded_date: v.dateISO || null,
   weight: numVal(v.weight), height: numVal(v.height), head_circ: numVal(v.headCirc),
   pr: numVal(v.pr), rr: numVal(v.rr), temp: numVal(v.temp), spo2: numVal(v.spo2),
 });
@@ -2301,17 +2299,15 @@ function PatientProfileScreen({ patient, onClose, session, printSettings, vaccin
       return [newEntry, ...prev];
     });
     setEditingVitals(false);
-    // Upsert-by-day: same "one entry per calendar day" rule the UI already enforces,
-    // mirrored server-side so a doctor and reception editing the same day don't create duplicates.
+    // Upsert-by-day: enforced by a unique (patient_id, recorded_date) constraint in
+    // Postgres, so a doctor and reception editing the same day can never create
+    // duplicate rows even if their local state is stale.
     beginWrite();
     try {
-      if (existingToday?.dbId) {
-        const { error } = await supabase.from("vitals").update(vitalsToDb(newEntry, patient.id, session.id)).eq("id", existingToday.dbId);
-        if (error) console.error("Failed to update vitals", error);
-      } else {
-        const { error } = await supabase.from("vitals").insert(vitalsToDb(newEntry, patient.id, session.id));
-        if (error) console.error("Failed to save vitals", error);
-      }
+      const { error } = await supabase
+        .from("vitals")
+        .upsert(vitalsToDb(newEntry, patient.id, session.id), { onConflict: "patient_id,recorded_date" });
+      if (error) console.error("Failed to save vitals", error);
     } finally {
       endWrite();
     }
